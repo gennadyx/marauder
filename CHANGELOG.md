@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **NNM-Club post links are accepted.** Topic creation and Sonarr imports now
+- **NNM-Club post links are accepted.** Adding a topic by hand and topics
+  created from Sonarr grabs now
   accept `viewtopic.php?p=…` as well as `?t=…`, including extra parameters and
   fragments, and resolve post links to the canonical topic URL when available
   to avoid duplicates; failed lookups still allow adding the post link.
