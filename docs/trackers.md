@@ -288,12 +288,19 @@ re-verified against the live site on **2026-09-03**.
 | **Quality selection** | No |
 | **Episode filter** | No |
 | **Cloudflare** | Site is behind Cloudflare, but no solver is needed in practice |
-| **URL format** | `https://nnmclub.to/forum/viewtopic.php?t=<id>` |
+| **URL formats** | `https://nnmclub.to/forum/viewtopic.php?t=<topic_id>` or `https://nnmclub.to/forum/viewtopic.php?p=<post_id>` |
 
 phpBB tracker behind Cloudflare. Works anonymously — account login is
 not supported because Cloudflare Turnstile blocks automated login
 flows. No credentials needed; do **not** add an NNM-Club account entry
 on `/accounts`.
+
+Both topic and post links accept extra query parameters (in any order) and
+fragments such as `#3820417`. When the page can be reached and identifies its
+topic, a post link is saved as the canonical `?t=` URL so adding either form
+does not create a duplicate. If that lookup fails, the post link is still
+saved and monitoring retries resolution when fetching it. Existing saved
+post links are not automatically merged with separately added topic links.
 
 **No sidecar required.** Earlier revisions of this page told you to start
 a `cfsolver` profile. That sidecar was removed (it never passed the

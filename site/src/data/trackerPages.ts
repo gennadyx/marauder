@@ -176,7 +176,7 @@ export const trackerPages: TrackerPageContent[] = [
     ],
     setup: [
       "Nothing to configure — no credentials, and no solver needed for normal use.",
-      "Paste the topic URL directly as a new topic.",
+      "Paste a topic URL (viewtopic.php?t=…) or a post URL (viewtopic.php?p=…) directly as a new topic; extra query parameters and fragments are accepted.",
       "If your server's address does start getting challenged, run the FlareSolverr solver overlay; Cloudflare policy is per-IP, so the clearance path stays available.",
     ],
     faq: [

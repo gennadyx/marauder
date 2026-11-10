@@ -32,6 +32,15 @@ type Tracker interface {
 	Download(ctx context.Context, topic *domain.Topic, check *domain.Check, creds *domain.TrackerCredential) (*domain.Payload, error)
 }
 
+// WithCanonicalParseURL opts into using Parse's returned Topic.URL as stored
+// identity. Parse already owns URL resolution; this marker adds no extra
+// network step. Other trackers keep their historical input URL (some Parse
+// implementations trim it for their own use without promising a new identity).
+type WithCanonicalParseURL interface {
+	Tracker
+	CanonicalizesTopicURL() bool
+}
+
 // WithCredentials is an optional capability; a tracker that can use user
 // credentials implements this interface in addition to Tracker. It does NOT
 // by itself mean credentials are mandatory — a tracker that also implements

@@ -98,6 +98,14 @@ type WithCloudflare interface {
     UsesCloudflare() bool
 }
 
+// Parse supplies a canonical URL for persistence (NNM-Club resolves p= to t=).
+// BuildAndCreate adopts a changed, non-empty Parse.URL only when this returns
+// true and CanParse accepts both that URL and its canonical-domain form.
+type WithCanonicalParseURL interface {
+    Tracker
+    CanonicalizesTopicURL() bool
+}
+
 // The tracker can enumerate a series' released seasons/episodes from its
 // URL (powers the AddTopic "start from" dropdowns). Implement it by
 // fetching the catalog page and reusing the episode parser; see LostFilm's
@@ -132,6 +140,12 @@ type WithInteractiveLogin interface {
 
 The registry detects these via type assertion at runtime — no separate
 registration needed.
+
+`WithCanonicalParseURL` uses the existing `Parse` step for both HTTP and
+headless topic creation. Bound any network resolution inside `Parse` and
+keep a usable URL when it fails; NNM-Club uses a five-second budget and
+retains `p=` on failure. Trackers without this capability keep the input
+URL's identity (with the usual canonical-domain rewrite).
 
 ### Login vs Verify — and never fake a Verify
 

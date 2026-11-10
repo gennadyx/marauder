@@ -2,9 +2,9 @@ package nnmclub
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 
 	"github.com/artyomsv/marauder/backend/internal/domain"
 	"github.com/artyomsv/marauder/backend/internal/plugins/registry"
@@ -48,28 +48,16 @@ var _ registry.WithAuthorComment = (*plugin)(nil)
 // 1 is found. Anonymous like the rest of the plugin; p.fetch enforces the
 // NNM-Club host allowlist.
 func (p *plugin) AuthorComment(ctx context.Context, rawURL string, creds *domain.TrackerCredential) (string, error) {
-	// Canonicalize the host (active-domain override) before matching, so
-	// m[0] below — and every pagination URL derived from it — dials the
-	// admin-configured mirror instead of the (possibly dead) host recorded
-	// in the stored topic URL.
-	target, err := canonicalURL(rawURL)
+	// A p= fallback must resolve to t= and fetch page one before attributing
+	// posts to the release author or building any pagination URLs.
+	raw, ref, err := p.fetchTopicPage(ctx, rawURL, creds)
 	if err != nil {
 		return "", fmt.Errorf("author comment: %w", err)
 	}
-	m := urlPattern.FindStringSubmatch(target)
-	if m == nil {
-		return "", errors.New("author comment: not a nnm-club viewtopic URL")
+	if ref.param != "t" {
+		return "", nil // unknown page: its first poster may be a replier
 	}
-	// m[0] is the matched "https://host/forum/viewtopic.php?t=N" prefix —
-	// the canonical page-1 URL. Fetching it (never the raw URL) keeps
-	// author attribution correct when the stored URL is a deep link that
-	// already carries &start= or a fragment: posts[0] must be the release
-	// post, and the &start= appended below must be the only pagination.
-	canonical := m[0]
-	raw, err := p.fetch(ctx, canonical, creds)
-	if err != nil {
-		return "", fmt.Errorf("author comment: %w", err)
-	}
+	canonical := ref.String()
 	page := forumcommon.DecodeWindows1251(string(raw))
 	posts := parsePosts(page)
 	if len(posts) == 0 {
@@ -85,7 +73,7 @@ func (p *plugin) AuthorComment(ctx context.Context, rawURL string, creds *domain
 	// page is the final fallback (post #1 there is the release
 	// description, never a comment). A page fetch failure just moves the
 	// walk along — "nothing found" stays uniformly ("", nil).
-	starts := forumcommon.PaginationStarts([]byte(page), m[2])
+	starts := forumcommon.PaginationStarts([]byte(page), strconv.Itoa(ref.id))
 	if len(starts) > maxCommentPageFetches {
 		starts = starts[:maxCommentPageFetches]
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -299,5 +300,69 @@ func TestAuthorComment_OffSiteURL_Refused(t *testing.T) {
 	p := &plugin{sessions: forumcommon.New()}
 	if _, err := p.AuthorComment(context.Background(), "https://evil.example/forum/viewtopic.php?t=1", nil); err == nil {
 		t.Fatal("expected an error for an off-site URL")
+	}
+}
+
+func TestAuthorComment_PostURL_ResolvesBeforePagination(t *testing.T) {
+	registry.SetDomainResolver(func(name string) registry.DomainConfig {
+		if name == pluginName {
+			return registry.DomainConfig{Active: "nnmclub.mirror", Custom: []string{"nnmclub.mirror"}}
+		}
+		return registry.DomainConfig{}
+	})
+	t.Cleanup(func() { registry.SetDomainResolver(nil) })
+	pages := map[string]string{
+		// Synthetic post on a later page: the first poster is NOT the
+		// release author, and its canonical link still carries pagination.
+		"p=200": `<html><head><link rel="canonical" href="viewtopic.php?t=830137&amp;start=15"></head><body>` +
+			nnmPost("199", "commenter", "Some reply") + nnmPost("200", "commenter", "Not an author update") + `</body></html>`,
+		"t=830137": nnmTopicPage(nnmPost("100", "uploader", "Release description")) +
+			`<a href="viewtopic.php?t=830137&amp;start=15">2</a>`,
+		"t=830137&start=15": nnmTopicPage(
+			nnmPost("201", "uploader", "Added episode 8."),
+			nnmPost("202", "commenter", "thanks"),
+		),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, ok := pages[r.URL.RawQuery]
+		if !ok || r.URL.Path != "/forum/viewtopic.php" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(page))
+	}))
+	t.Cleanup(srv.Close)
+	rec := &hostRecordingRewrite{target: strings.TrimPrefix(srv.URL, "http://")}
+	p := &plugin{sessions: forumcommon.New(), transport: rec}
+	got, err := p.AuthorComment(context.Background(),
+		"https://nnmclub.to/forum/viewtopic.php?sid=abc&p=200&start=90#200", nil)
+	if err != nil || got != "Added episode 8." {
+		t.Fatalf("AuthorComment = %q, %v", got, err)
+	}
+	want := []string{"p=200", "t=830137", "t=830137&start=15"}
+	if !reflect.DeepEqual(rec.queries, want) {
+		t.Errorf("queries = %v, want %v", rec.queries, want)
+	}
+	for _, host := range rec.hosts {
+		if host != "nnmclub.mirror" {
+			t.Errorf("fetch host = %q, want active mirror", host)
+		}
+	}
+}
+
+func TestAuthorComment_UnresolvedPost_DoesNotAttributeReplies(t *testing.T) {
+	page := nnmTopicPage(
+		nnmPost("200", "commenter", "First visible reply"),
+		nnmPost("201", "commenter", "Another reply"),
+	) + `<a href="viewtopic.php?t=830137&amp;start=30">3</a>`
+	p, _, _ := newAuthorCommentServer(t, map[string]string{"": page})
+	rec := &hostRecordingRewrite{target: p.transport.(*hostRewrite).host}
+	p.transport = rec
+	got, err := p.AuthorComment(context.Background(), "https://nnmclub.to/forum/viewtopic.php?p=200#200", nil)
+	if err != nil || got != "" {
+		t.Fatalf("unresolved post must not guess the author: %q, %v", got, err)
+	}
+	if !reflect.DeepEqual(rec.queries, []string{"p=200"}) {
+		t.Errorf("unresolved post must not paginate: %v", rec.queries)
 	}
 }
