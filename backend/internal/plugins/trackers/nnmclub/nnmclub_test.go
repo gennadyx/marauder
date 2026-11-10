@@ -87,7 +87,7 @@ func TestCanParse(t *testing.T) {
 		"https://nnmclub.to:443/forum/viewtopic.php?p=1":                     false,
 		"https://nnmclub.to/viewtopic.php?p=1":                               false,
 		"https://nnmclub.to/forum/viewtopic.php/other?p=1":                   false,
-		"https://nnmclub.to/forum/%76iewtopic.php?t=42abc":                  false,
+		"https://nnmclub.to/forum/%76iewtopic.php?t=42abc":                   false,
 		"https://nnmclub.to./forum/viewtopic.php?t=42abc&highlight=100%":     false,
 		"ftp://nnmclub.to/forum/viewtopic.php?p=1":                           false,
 		"https://nnmclub.to/forum/viewtopic.php?p=12abc":                     false,

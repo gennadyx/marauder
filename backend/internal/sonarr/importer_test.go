@@ -145,7 +145,7 @@ func enabledInstance(url string) *domain.SonarrInstance {
 func completion(hash string, insp progress.Inspection, inspErr error) progress.Completion {
 	return progress.Completion{
 		Delivery: domain.InFlightDelivery{DeliveryID: uuid.New(), TopicID: uuid.New(), UserID: uuid.New(), Infohash: hash},
-		Inspect:  func(context.Context) (progress.Inspection, error) {
+		Inspect: func(context.Context) (progress.Inspection, error) {
 			return insp, inspErr
 		},
 	}
@@ -199,7 +199,7 @@ func wantedFiles(paths ...string) []domain.ClientFile {
 func TestImporter_RequestsCopyImportOfTheTorrentsOwnNewFiles(t *testing.T) {
 	const dir = "/data/downloads/tv/Show S01/"
 	fs := &fakeSonarr{
-		mappings:   `[{"id":1,"host":"qbit","remotePath":"/downloads/","localPath":"/data/downloads/"}]`,
+		mappings: `[{"id":1,"host":"qbit","remotePath":"/downloads/","localPath":"/data/downloads/"}]`,
 		candidates: "[" + candidate(dir+"E05.mkv", `[{"id":1},{"id":11}]`) + "," +
 			candidate(dir+"E01.mkv", `[{"id":1}]`) + "," +
 			candidate(dir+"E06.mkv", `[{"id":1}]`) + "]",

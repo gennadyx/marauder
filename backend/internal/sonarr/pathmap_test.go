@@ -38,9 +38,9 @@ func TestMapPath(t *testing.T) {
 			mapped:   true,
 		},
 		{
-			name:     "longest remote path wins among the client's own mappings",
-			in:       "/downloads/tv/Show",
-			host:     "qbit",
+			name: "longest remote path wins among the client's own mappings",
+			in:   "/downloads/tv/Show",
+			host: "qbit",
 			mappings: []RemotePathMapping{
 				{Host: "qbit", RemotePath: "/downloads", LocalPath: "/x"},
 				{Host: "qbit", RemotePath: "/downloads/tv", LocalPath: "/y/tv"},
@@ -70,9 +70,9 @@ func TestMapPath(t *testing.T) {
 			err:      errAmbiguousMapping,
 		},
 		{
-			name:     "host unknown, overlapping mappings agree",
-			in:       "/downloads/tv/E01.mkv",
-			host:     "transmission",
+			name: "host unknown, overlapping mappings agree",
+			in:   "/downloads/tv/E01.mkv",
+			host: "transmission",
 			mappings: []RemotePathMapping{
 				{Host: "a", RemotePath: "/downloads/", LocalPath: "/mnt/dl/"},
 				{Host: "b", RemotePath: "/downloads/tv/", LocalPath: "/mnt/dl/tv/"},
@@ -81,9 +81,9 @@ func TestMapPath(t *testing.T) {
 			mapped: true,
 		},
 		{
-			name:     "the client's own mappings miss: another client's is not borrowed",
-			in:       "/downloads/E01.mkv",
-			host:     "qbit-a",
+			name: "the client's own mappings miss: another client's is not borrowed",
+			in:   "/downloads/E01.mkv",
+			host: "qbit-a",
 			mappings: []RemotePathMapping{
 				{Host: "qbit-a", RemotePath: "/other/", LocalPath: "/x/"},
 				{Host: "qbit-b", RemotePath: "/downloads/", LocalPath: "/mnt/b/"},
@@ -118,9 +118,9 @@ func TestMapPath(t *testing.T) {
 			mapped:   true,
 		},
 		{
-			name:     "same host, same remote path, different local paths is ambiguous",
-			in:       "/downloads/Show",
-			host:     "qbit",
+			name: "same host, same remote path, different local paths is ambiguous",
+			in:   "/downloads/Show",
+			host: "qbit",
 			mappings: []RemotePathMapping{
 				{Host: "qbit", RemotePath: "/downloads/", LocalPath: "/one"},
 				{Host: "qbit", RemotePath: "/downloads", LocalPath: "/two"},
@@ -128,8 +128,8 @@ func TestMapPath(t *testing.T) {
 			err: errAmbiguousMapping,
 		},
 		{
-			name:     "two hosts, same remote and local path is fine",
-			in:       "/downloads/Show",
+			name: "two hosts, same remote and local path is fine",
+			in:   "/downloads/Show",
 			mappings: []RemotePathMapping{
 				{Host: "a", RemotePath: "/downloads/", LocalPath: "/one/"},
 				{Host: "b", RemotePath: "/downloads", LocalPath: "/one"},
