@@ -56,6 +56,7 @@ type instanceView struct {
 	DefaultReplaceOnUpdate   *bool    `json:"default_replace_on_update"`
 	DefaultReplaceDeleteData *bool    `json:"default_replace_delete_data"`
 	UpdateExisting           bool     `json:"update_existing"`
+	ImportOnComplete         bool     `json:"import_on_complete"`
 	LastSeenAt               *string  `json:"last_seen_at"`
 	CreatedAt                string   `json:"created_at"`
 	UpdatedAt                string   `json:"updated_at"`
@@ -74,6 +75,8 @@ type instanceReq struct {
 	DefaultReplaceOnUpdate   *bool    `json:"default_replace_on_update"`
 	DefaultReplaceDeleteData *bool    `json:"default_replace_delete_data"`
 	UpdateExisting           bool     `json:"update_existing"`
+	// ImportOnComplete: omitted decodes as false, the column default.
+	ImportOnComplete bool `json:"import_on_complete"`
 }
 
 type testSonarrReq struct {
@@ -273,6 +276,7 @@ func (h *Sonarr) decodeInstance(r *http.Request) (domain.SonarrInstance, *proble
 		DefaultReplaceOnUpdate:   req.DefaultReplaceOnUpdate,
 		DefaultReplaceDeleteData: req.DefaultReplaceDeleteData,
 		UpdateExisting:           req.UpdateExisting,
+		ImportOnComplete:         req.ImportOnComplete,
 	}, nil
 }
 
@@ -297,6 +301,7 @@ func toInstanceView(c *domain.SonarrInstance) instanceView {
 		DefaultReplaceOnUpdate:   c.DefaultReplaceOnUpdate,
 		DefaultReplaceDeleteData: c.DefaultReplaceDeleteData,
 		UpdateExisting:           c.UpdateExisting,
+		ImportOnComplete:         c.ImportOnComplete,
 		CreatedAt:                c.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:                c.UpdatedAt.UTC().Format(time.RFC3339),
 	}

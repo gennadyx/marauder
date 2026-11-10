@@ -52,7 +52,7 @@ func TestSonarrInstances_ReplaceDefaultsRoundTripAndPlaceholders(t *testing.T) {
 				if !strings.Contains(fp.queryRowSQL, "update_existing, owner_user_id, default_replace_on_update, default_replace_delete_data") {
 					t.Errorf("create columns = %s", fp.queryRowSQL)
 				}
-				if key != "" && !strings.Contains(fp.queryRowSQL, "$11, $12, $13, $14)") {
+				if key != "" && !strings.Contains(fp.queryRowSQL, "$13, $14, $15)") {
 					t.Errorf("create key placeholders = %s", fp.queryRowSQL)
 				}
 				got, err = r.Update(context.Background(), master, id, input)
@@ -71,15 +71,15 @@ func TestSonarrInstances_ReplaceDefaultsRoundTripAndPlaceholders(t *testing.T) {
 					}
 				}
 				if key == "" {
-					if len(fp.queryRowArgs) != 12 || fp.queryRowArgs[11] != id || !strings.Contains(fp.queryRowSQL, "WHERE id = $12") {
+					if len(fp.queryRowArgs) != 13 || fp.queryRowArgs[12] != id || !strings.Contains(fp.queryRowSQL, "WHERE id = $13") {
 						t.Errorf("no-key update placeholders: %s, %v", fp.queryRowSQL, fp.queryRowArgs)
 					}
 				} else {
-					if len(fp.queryRowArgs) != 14 || fp.queryRowArgs[13] != id || !strings.Contains(fp.queryRowSQL, "api_key_enc = $12, api_key_nonce = $13 WHERE id = $14") {
+					if len(fp.queryRowArgs) != 15 || fp.queryRowArgs[14] != id || !strings.Contains(fp.queryRowSQL, "api_key_enc = $13, api_key_nonce = $14 WHERE id = $15") {
 						t.Fatalf("key update placeholders: %s, %v", fp.queryRowSQL, fp.queryRowArgs)
 					}
-					enc, encOK := fp.queryRowArgs[11].([]byte)
-					nonce, nonceOK := fp.queryRowArgs[12].([]byte)
+					enc, encOK := fp.queryRowArgs[12].([]byte)
+					nonce, nonceOK := fp.queryRowArgs[13].([]byte)
 					if !encOK || !nonceOK {
 						t.Fatal("missing encrypted key arguments")
 					}
@@ -150,12 +150,12 @@ func (p *fakeSonarrPool) QueryRow(_ context.Context, sql string, args ...any) pg
 	return fakeSonarrRow{vals: p.row, scanErr: p.queryRowErr}
 }
 
-// fullRow builds the 18-column RETURNING/SELECT row used by scanInstance.
+// fullRow builds the 19-column RETURNING/SELECT row used by scanInstance.
 func fullRow(id uuid.UUID, name string, enabled bool, url string, enc, nonce []byte) []any {
 	return []any{
 		id, name, enabled, url, enc, nonce,
 		900, []string{"rutracker"}, (*uuid.UUID)(nil), "", "", (*bool)(nil), (*bool)(nil), false,
-		(*uuid.UUID)(nil), (*time.Time)(nil), time.Now(), time.Now(),
+		(*uuid.UUID)(nil), (*time.Time)(nil), time.Now(), time.Now(), false,
 	}
 }
 
@@ -171,12 +171,12 @@ func TestSonarrInstances_Create_EncryptsKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// enc + nonce appended as args 13 and 14.
-	if len(fp.queryRowArgs) != 14 {
-		t.Fatalf("want 14 queryRow args, got %d", len(fp.queryRowArgs))
+	// enc + nonce appended as args 14 and 15.
+	if len(fp.queryRowArgs) != 15 {
+		t.Fatalf("want 15 queryRow args, got %d", len(fp.queryRowArgs))
 	}
-	enc, _ := fp.queryRowArgs[12].([]byte)
-	nonce, _ := fp.queryRowArgs[13].([]byte)
+	enc, _ := fp.queryRowArgs[13].([]byte)
+	nonce, _ := fp.queryRowArgs[14].([]byte)
 	if len(enc) == 0 || string(enc) == "super-secret" {
 		t.Fatalf("api key not encrypted at rest")
 	}
@@ -216,8 +216,8 @@ func TestSonarrInstances_Update_EmptyKeyPreservesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	// 11 SET args + id (no enc/nonce) = 12.
-	if len(fp.queryRowArgs) != 12 {
+	// 12 SET args + id (no enc/nonce) = 13.
+	if len(fp.queryRowArgs) != 13 {
 		t.Errorf("empty key must not write enc/nonce; got %d args", len(fp.queryRowArgs))
 	}
 }
@@ -285,5 +285,45 @@ func TestSonarrInstances_ListEnabled(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].Name != "TV" || got[1].Name != "Anime" {
 		t.Errorf("list result wrong: %+v", got)
+	}
+}
+
+// TestSonarrInstances_ImportOnCompleteRoundTrip pins the migration-0021 column:
+// written as the 13th create argument and the 12th update argument, and read
+// back as the last selected column.
+func TestSonarrInstances_ImportOnCompleteRoundTrip(t *testing.T) {
+	for _, want := range []bool{false, true} {
+		id := uuid.New()
+		row := fullRow(id, "TEST-instance", true, "http://sonarr:8989", nil, nil)
+		row[18] = want
+		fp := &fakeSonarrPool{row: row}
+		r := &SonarrInstances{pool: fp}
+		master := testMasterKey(t)
+		input := domain.SonarrInstance{Name: "TEST-instance", ImportOnComplete: want}
+
+		got, err := r.Create(context.Background(), master, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ImportOnComplete != want {
+			t.Errorf("create read back import_on_complete = %v, want %v", got.ImportOnComplete, want)
+		}
+		if fp.queryRowArgs[12] != want || !strings.Contains(fp.queryRowSQL, "import_on_complete) VALUES") {
+			t.Errorf("create args/SQL = %v / %s", fp.queryRowArgs, fp.queryRowSQL)
+		}
+
+		got, err = r.Update(context.Background(), master, id, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ImportOnComplete != want {
+			t.Errorf("update read back import_on_complete = %v, want %v", got.ImportOnComplete, want)
+		}
+		if fp.queryRowArgs[11] != want || !strings.Contains(fp.queryRowSQL, "import_on_complete   = $12") {
+			t.Errorf("update args/SQL = %v / %s", fp.queryRowArgs, fp.queryRowSQL)
+		}
+		if !strings.HasSuffix(strings.TrimSpace(sonarrCols), "import_on_complete") {
+			t.Errorf("sonarrCols must end with import_on_complete (scan order): %s", sonarrCols)
+		}
 	}
 }

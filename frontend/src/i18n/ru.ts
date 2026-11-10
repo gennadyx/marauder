@@ -193,6 +193,9 @@ const ru: Record<string, string> = {
   "settings.sonarr.categoryHintFree": "Вкладывается в базовую папку загрузки клиента.",
   "settings.sonarr.defaultDownloadDir": "Папка загрузки по умолчанию",
   "settings.sonarr.updateExisting": "Приводить существующие темы к этим значениям",
+  "settings.sonarr.importOnComplete": "Импортировать обновления после загрузки",
+  "settings.sonarr.importOnCompleteHint":
+    "Когда тема, созданная этим экземпляром, получает обновлённый торрент и он докачивается, Marauder просит Sonarr импортировать новые серии (копированием, чтобы торрент продолжал раздаваться). Серии, уже имеющиеся в библиотеке, не заменяются. Нужен клиент qBittorrent или Transmission.",
   "settings.sonarr.lastSeen": "Последний опрос",
   "settings.sonarr.test": "Проверить подключение",
   "settings.sonarr.testing": "Проверка…",
@@ -399,6 +402,7 @@ const ru: Record<string, string> = {
   "events.check_failed": "ошибка",
   "events.session_expired": "сессия истекла",
   "events.topic_reset": "тема сброшена",
+  "events.sonarr_import": "импорт в Sonarr",
 
   // Topic history timeline
   "topics.history.empty": "История пока пуста",

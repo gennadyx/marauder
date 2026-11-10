@@ -42,7 +42,7 @@ const sonarrCols = `id, name, enabled, COALESCE(url,''), api_key_enc, api_key_no
        poll_interval_sec, allowed_trackers, default_client_id, default_category,
        default_download_dir, default_replace_on_update, default_replace_delete_data,
        update_existing, owner_user_id, last_seen_at,
-       created_at, updated_at`
+       created_at, updated_at, import_on_complete`
 
 // scanInstance decodes one row (pgx.Row or pgx.Rows) into a SonarrInstance,
 // decrypting the API key. rowScanner is shared with the other repos.
@@ -55,6 +55,7 @@ func scanInstance(row rowScanner, master *crypto.MasterKey) (domain.SonarrInstan
 		&inst.DefaultCategory, &inst.DefaultDownloadDir,
 		&inst.DefaultReplaceOnUpdate, &inst.DefaultReplaceDeleteData, &inst.UpdateExisting,
 		&inst.OwnerUserID, &inst.LastSeenAt, &inst.CreatedAt, &inst.UpdatedAt,
+		&inst.ImportOnComplete,
 	); err != nil {
 		return domain.SonarrInstance{}, err
 	}
@@ -123,13 +124,15 @@ func (r *SonarrInstances) Create(ctx context.Context, master *crypto.MasterKey, 
 	}
 	cols := `name, enabled, url, poll_interval_sec, allowed_trackers,
 	         default_client_id, default_category, default_download_dir,
-	         update_existing, owner_user_id, default_replace_on_update, default_replace_delete_data`
-	vals := `$1, $2, NULLIF($3,''), $4, $5, $6, $7, $8, $9, $10, $11, $12`
+	         update_existing, owner_user_id, default_replace_on_update, default_replace_delete_data,
+	         import_on_complete`
+	vals := `$1, $2, NULLIF($3,''), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13`
 	args := []any{
 		inst.Name, inst.Enabled, inst.URL, inst.PollIntervalSec, allowed,
 		inst.DefaultClientID, inst.DefaultCategory, inst.DefaultDownloadDir,
 		inst.UpdateExisting, inst.OwnerUserID,
 		inst.DefaultReplaceOnUpdate, inst.DefaultReplaceDeleteData,
+		inst.ImportOnComplete,
 	}
 	if inst.APIKey != "" {
 		enc, nonce, err := master.EncryptString(inst.APIKey)
@@ -137,7 +140,7 @@ func (r *SonarrInstances) Create(ctx context.Context, master *crypto.MasterKey, 
 			return nil, fmt.Errorf("sonarr_instances: encrypt api key: %w", err)
 		}
 		cols += `, api_key_enc, api_key_nonce`
-		vals += `, $13, $14`
+		vals += `, $14, $15`
 		args = append(args, enc, nonce)
 	}
 	q := `INSERT INTO sonarr_instances (` + cols + `) VALUES (` + vals + `) RETURNING ` + sonarrCols
@@ -169,22 +172,24 @@ UPDATE sonarr_instances SET
     update_existing      = $9,
     default_replace_on_update = $10,
     default_replace_delete_data = $11,
+    import_on_complete   = $12,
     updated_at           = now()`
 	args := []any{
 		inst.Name, inst.Enabled, inst.URL, inst.PollIntervalSec, allowed,
 		inst.DefaultClientID, inst.DefaultCategory, inst.DefaultDownloadDir,
 		inst.UpdateExisting,
 		inst.DefaultReplaceOnUpdate, inst.DefaultReplaceDeleteData,
+		inst.ImportOnComplete,
 	}
 	if inst.APIKey != "" {
 		enc, nonce, err := master.EncryptString(inst.APIKey)
 		if err != nil {
 			return nil, fmt.Errorf("sonarr_instances: encrypt api key: %w", err)
 		}
-		q += `, api_key_enc = $12, api_key_nonce = $13 WHERE id = $14 RETURNING ` + sonarrCols
+		q += `, api_key_enc = $13, api_key_nonce = $14 WHERE id = $15 RETURNING ` + sonarrCols
 		args = append(args, enc, nonce, id)
 	} else {
-		q += ` WHERE id = $12 RETURNING ` + sonarrCols
+		q += ` WHERE id = $13 RETURNING ` + sonarrCols
 		args = append(args, id)
 	}
 	updated, err := scanInstance(r.pool.QueryRow(ctx, q, args...), master)

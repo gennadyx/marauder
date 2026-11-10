@@ -353,8 +353,12 @@ type SonarrInstance struct {
 	DefaultReplaceOnUpdate   *bool
 	DefaultReplaceDeleteData *bool
 	UpdateExisting           bool
-	OwnerUserID              *uuid.UUID
-	LastSeenAt               *time.Time // history-poll cursor
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
+	// ImportOnComplete asks this instance to import a torrent Marauder
+	// delivered for one of its topics once it finishes downloading, unless it
+	// is the torrent Sonarr grabbed itself (migration 0021).
+	ImportOnComplete bool
+	OwnerUserID      *uuid.UUID
+	LastSeenAt       *time.Time // history-poll cursor
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }

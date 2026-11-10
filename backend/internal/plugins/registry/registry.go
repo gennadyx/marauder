@@ -269,10 +269,19 @@ type Client interface {
 // BitTorrent v1 infohash (lowercase hex). PercentDone is 0..1. State is a
 // normalised lifecycle word (see the State* constants) so the frontend can
 // translate it uniformly regardless of which client produced it.
+//
+// SavePath is the directory the client stores the torrent in, as the CLIENT
+// sees it (qBittorrent save_path, Transmission downloadDir). The torrent's
+// files live under it at the paths WithFileSelection.Files reports, which
+// already include a root folder (renamed or not). It is server-internal —
+// tagged json:"-" so it can never leak into an API response that serialises
+// a status — and empty when the client did not report it. Consumed by the
+// Sonarr import-on-complete hook to locate the finished files.
 type TorrentStatus struct {
 	Hash        string  `json:"hash"`
 	PercentDone float64 `json:"percent_done"`
 	State       string  `json:"state"`
+	SavePath    string  `json:"-"`
 }
 
 // Normalised torrent lifecycle states. Each WithStatus implementation maps

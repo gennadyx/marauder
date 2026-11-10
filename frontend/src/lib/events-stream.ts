@@ -18,7 +18,7 @@ export interface WireEvent {
 
 const PERSISTED = new Set([
   "topic.added", "topic.reset", "release.found", "download.submitted",
-  "download.completed", "check.failed", "session.expired",
+  "download.completed", "check.failed", "session.expired", "sonarr.import",
 ]);
 
 // applyEvent routes one live event into the React Query cache / check store.

@@ -16,6 +16,7 @@ func TestPolicyFor(t *testing.T) {
 		{DownloadCompleted, true, true, true},
 		{CheckFailed, true, true, true},
 		{SessionExpired, true, true, true},
+		{SonarrImport, true, false, true},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.typ), func(t *testing.T) {

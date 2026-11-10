@@ -63,7 +63,7 @@ func (f *fakeQBit) handler() http.Handler {
 		// One downloading, one finished-seeding torrent.
 		w.Write([]byte(`[` +
 			`{"hash":"ABC123","progress":0.42,"state":"downloading"},` +
-			`{"hash":"def456","progress":1,"state":"stalledUP"}]`))
+			`{"hash":"def456","progress":1,"state":"stalledUP","save_path":"/downloads/tv"}]`))
 	})
 	mux.HandleFunc("/api/v2/torrents/add", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -257,6 +257,12 @@ func TestStatus_MultipleHashes_MapsStatesAndProgress(t *testing.T) {
 	}
 	if s := byHash["def456"]; s.State != registry.StateSeeding || s.PercentDone != 1 {
 		t.Errorf("def456 = %+v, want seeding @ 1", s)
+	}
+	if s := byHash["def456"]; s.SavePath != "/downloads/tv" {
+		t.Errorf("def456 save path = %q, want /downloads/tv", s.SavePath)
+	}
+	if s := byHash["abc123"]; s.SavePath != "" {
+		t.Errorf("abc123 save path = %q, want empty when not reported", s.SavePath)
 	}
 }
 

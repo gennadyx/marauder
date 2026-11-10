@@ -268,3 +268,45 @@ func TestSonarr_Test_ConnectionFailure_SanitizedError(t *testing.T) {
 		}
 	}
 }
+
+func TestSonarr_ImportOnCompleteRoundTrip(t *testing.T) {
+	for _, want := range []bool{false, true} {
+		store := &fakeSonarrInstances{}
+		h := &Sonarr{Instances: store, BaseURL: "http://test"}
+		body := instanceReq{Name: "TEST-instance", ImportOnComplete: want}
+		for _, update := range []bool{false, true} {
+			w := httptest.NewRecorder()
+			req := authedReq(t, uuid.New(), body)
+			stored := &store.created
+			if update {
+				h.Update(w, withURLParam(req, "id", uuid.NewString()))
+				stored = &store.updated
+			} else {
+				h.Create(w, req)
+			}
+			if *stored == nil || (*stored).ImportOnComplete != want {
+				t.Fatalf("update=%v: stored import_on_complete = %+v, want %v", update, *stored, want)
+			}
+			var view map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+				t.Fatal(err)
+			}
+			if got, wantJSON := string(view["import_on_complete"]), map[bool]string{true: "true", false: "false"}[want]; got != wantJSON {
+				t.Errorf("update=%v: response import_on_complete = %s, want %s", update, got, wantJSON)
+			}
+		}
+	}
+}
+
+func TestSonarr_ImportOnCompleteOmittedIsFalse(t *testing.T) {
+	store := &fakeSonarrInstances{}
+	h := &Sonarr{Instances: store, BaseURL: "http://test"}
+	w := httptest.NewRecorder()
+	h.Create(w, authedReq(t, uuid.New(), map[string]any{"name": "TEST-instance"}))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if store.created.ImportOnComplete {
+		t.Error("an omitted import_on_complete must decode as false")
+	}
+}

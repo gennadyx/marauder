@@ -39,6 +39,7 @@ const inst = {
   default_replace_on_update: true,
   default_replace_delete_data: false,
   update_existing: false,
+  import_on_complete: false,
   last_seen_at: null,
   created_at: "2026-06-27T00:00:00Z",
   updated_at: "2026-06-27T00:00:00Z",
@@ -80,6 +81,19 @@ describe("SonarrInstanceCard", () => {
     expect(screen.getByText("Delete the old files by default").nextElementSibling).toHaveTextContent(
       "Use global default",
     );
+  });
+
+  it("shows whether import on complete is on", () => {
+    wrap(<SonarrInstanceCard instance={{ ...inst, import_on_complete: true }} clients={[]} trackers={[]} />);
+    expect(screen.getByText("Import updates when they finish downloading").nextElementSibling).toHaveTextContent("On");
+  });
+
+  it("keeps import on complete when the toggle flips enabled", async () => {
+    mockApi.updateSonarrInstance.mockResolvedValue({ ...inst, enabled: false });
+    wrap(<SonarrInstanceCard instance={{ ...inst, import_on_complete: true }} clients={[]} trackers={[]} />);
+    await userEvent.click(screen.getByRole("button", { name: /^disable$/i }));
+    await waitFor(() => expect(mockApi.updateSonarrInstance).toHaveBeenCalled());
+    expect(mockApi.updateSonarrInstance.mock.calls[0][1].import_on_complete).toBe(true);
   });
 
   it("deletes after the inline confirm", async () => {

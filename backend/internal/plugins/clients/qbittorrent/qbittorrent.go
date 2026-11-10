@@ -273,6 +273,7 @@ func (p *plugin) Status(ctx context.Context, rawConfig []byte, hashes []string) 
 		Hash     string  `json:"hash"`
 		Progress float64 `json:"progress"`
 		State    string  `json:"state"`
+		SavePath string  `json:"save_path"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		return nil, fmt.Errorf("decode qbit info: %w", err)
@@ -283,6 +284,7 @@ func (p *plugin) Status(ctx context.Context, rawConfig []byte, hashes []string) 
 			Hash:        strings.ToLower(it.Hash),
 			PercentDone: it.Progress,
 			State:       qbitState(it.State),
+			SavePath:    it.SavePath,
 		})
 	}
 	return out, nil

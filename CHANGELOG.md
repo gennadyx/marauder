@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sonarr: import updated torrents when they finish downloading.** A new
+  per-instance option asks Sonarr to import a torrent Marauder delivered for a
+  Sonarr-created topic once it completes, unless it is the torrent Sonarr
+  grabbed itself. It imports new episodes only (never replaces a file already
+  in the library), uses Sonarr's manual import in copy mode (the torrent keeps
+  seeding), and applies Sonarr's remote path mappings for the client's host. It
+  needs qBittorrent or Transmission. Each attempt appears on the topic timeline, and the
+  `marauder_sonarr_imports_total{result}` metric counts the outcomes. Off by
+  default.
+
 ### Fixed
 
 - **NNM-Club post links are accepted.** Topic creation and Sonarr imports now
