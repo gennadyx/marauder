@@ -20,6 +20,10 @@ const (
 	DownloadCompleted Type = "download.completed"
 	CheckFailed       Type = "check.failed"
 	SessionExpired    Type = "session.expired"
+	// SonarrImport records the outcome of asking Sonarr to import a finished
+	// update (import-on-complete): requested, nothing to import, or failed.
+	// Timeline-only — never notified.
+	SonarrImport Type = "sonarr.import"
 )
 
 // Policy describes the routing for one event type.
@@ -41,6 +45,7 @@ var policies = map[Type]Policy{
 	DownloadCompleted: {Persist: true, Notifiable: true, SSE: true},
 	CheckFailed:       {Persist: true, Notifiable: true, SSE: true},
 	SessionExpired:    {Persist: true, Notifiable: true, SSE: true},
+	SonarrImport:      {Persist: true, Notifiable: false, SSE: true},
 }
 
 // PolicyFor returns the routing policy for t. An unknown type is inert

@@ -272,6 +272,13 @@ func run() error {
 			progress.Config{PollInterval: cfg.ProgressPollInterval, PublicBaseURL: cfg.PublicBaseURL},
 			logger,
 		)
+		// Sonarr import-on-complete: the watcher hands each won completion to
+		// the importer, which queues it and works it on its own goroutines.
+		// Inert unless a Sonarr instance has import_on_complete set, and
+		// impossible without the watcher (nothing else detects completion).
+		sonarrImporter := sonarr.NewImporter(logger, master, sonarrInstancesRepo, topicsRepo, bus)
+		sonarrImporter.Start(rootCtx)
+		watcher.SetCompletionHook(sonarrImporter)
 		if err := watcher.Start(rootCtx); err != nil {
 			logger.Error().Err(err).Msg("progress watcher failed to start")
 		}

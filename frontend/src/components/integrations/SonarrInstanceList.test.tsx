@@ -40,6 +40,7 @@ const inst = {
   default_replace_on_update: null,
   default_replace_delete_data: null,
   update_existing: false,
+  import_on_complete: false,
   last_seen_at: null,
   created_at: "2026-06-27T00:00:00Z",
   updated_at: "2026-06-27T00:00:00Z",

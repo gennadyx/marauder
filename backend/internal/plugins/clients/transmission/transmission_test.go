@@ -57,7 +57,7 @@ func newFakeServer(t *testing.T) (*httptest.Server, *fakeServer) {
 			w.WriteHeader(200)
 			w.Write([]byte(`{"result":"success","arguments":{"torrents":[` +
 				`{"hashString":"ABC123","percentDone":0.5,"status":4},` +
-				`{"hashString":"def456","percentDone":1,"status":6}]}}`))
+				`{"hashString":"def456","percentDone":1,"status":6,"downloadDir":"/downloads/tv"}]}}`))
 		default:
 			w.WriteHeader(500)
 		}
@@ -171,6 +171,9 @@ func TestStatusMapsHashesAndStates(t *testing.T) {
 	}
 	if s := byHash["def456"]; s.State != registry.StateSeeding || s.PercentDone != 1 {
 		t.Errorf("def456 = %+v, want seeding @ 1", s)
+	}
+	if s := byHash["def456"]; s.SavePath != "/downloads/tv" {
+		t.Errorf("def456 save path = %q, want /downloads/tv", s.SavePath)
 	}
 }
 

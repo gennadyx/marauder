@@ -81,6 +81,7 @@ Each instance has these fields:
 | **Default client / category / download dir** | Applied to every topic this instance auto-creates. Point these at the **same** qBittorrent + category this Sonarr imports from (e.g. `tv-sonarr`) so Sonarr keeps importing Marauder's future downloads. |
 | **Replace previous version by default** | `default_replace_on_update`: **Use global default** (`null`), **On**, or **Off** for newly created topics. |
 | **Delete the old files by default** | `default_replace_delete_data`: independently inherits the global default (`null`) or overrides it with **On** / **Off**. Disabled in the form when the effective replace setting is known to be off; stays selectable if the global default cannot be read. Both values are shown on the instance card. |
+| **Import updates when they finish downloading** | `import_on_complete` (default **off**). When a topic this instance created receives an updated torrent and it finishes downloading, Marauder asks this Sonarr to import the new files. See [Importing updates](#importing-updates). |
 
 The two replace defaults apply only at topic creation: each instance override
 wins over **Settings → Topic defaults**, with built-in replace **off** / delete
@@ -97,6 +98,132 @@ Each instance lives as its own row in the database (encrypted API key) and is
 editable at runtime — no restart, no env vars. Changes take effect on the next
 poll tick. **Go-forward on first enable** applies per instance: enabling an
 instance stamps *its* cursor to "now" and imports nothing historical.
+
+## Importing updates
+
+Sonarr tracks a download by its infohash. When the tracker later **updates**
+a release Sonarr grabbed — a season pack gains an episode — Marauder delivers
+the new torrent, but its infohash is one Sonarr never grabbed, so Sonarr's
+Completed Download Handling does not reliably pick the new episodes up. With
+**Import updates when they finish downloading** on, Marauder closes that loop
+for **new episodes**.
+
+When the progress watcher sees a delivery finish (once per delivery, see
+`MARAUDER_PROGRESS_WATCHER_ENABLED`), Marauder imports it only if all of these
+hold:
+
+- the topic was created by this Sonarr integration and is not in notify-only
+  mode;
+- the finished torrent is **not** one Sonarr grabbed itself — Marauder
+  remembers the last few grabs per topic, so a re-grab does not make an earlier
+  one look foreign (Sonarr imports its own grabs; a second import would race
+  it);
+- the instance that created the topic still exists, is enabled, has the option
+  on, and still points at the **same Sonarr server** it pointed at when the
+  topic was linked (see below).
+
+Then it:
+
+1. waits ~30 s and re-reads the torrent from the client until it is
+   **complete and at rest** (100% of the wanted data, and seeding, stopped or
+   queued) — qBittorrent reports 100% while it is still moving files out of its
+   temporary folder, and a recheck can find data missing after the fact;
+2. reads the torrent's save path and file list from the client. The client's
+   paths are the truth: a custom folder name is honoured, and files skipped by
+   "download only new files" are left out;
+3. translates the path with **Sonarr's own Remote Path Mappings** (see below);
+4. asks Sonarr which video files at that path it could import
+   (`GET /api/v3/manualimport?folder=…`) and keeps only this torrent's own
+   files;
+5. has Sonarr re-evaluate those files against the series it grabbed
+   (`POST /api/v3/manualimport` with the series id), so a Cyrillic folder name
+   that Sonarr cannot parse does not matter;
+6. keeps the files with a recognised episode, **no rejection**, and **no
+   episode that already has a file in Sonarr**;
+7. checks again that the topic and the instance have not changed while it
+   worked (deleted, switched to notify-only, option turned off, re-linked, or
+   re-pointed at another server) — files evaluated under one link are never
+   sent under another;
+8. queues Sonarr's `ManualImport` command in **copy** mode — never move, so the
+   torrent keeps seeding. If Sonarr's *Use Hardlinks instead of Copy* is on,
+   the copy is a hardlink.
+
+### New episodes only
+
+The import never replaces an episode file already in your library. Sonarr
+rejects only *downgrades*: a file of the same quality passes its checks, and
+importing it deletes the existing file before copying the new one. So
+Marauder skips every file covering an episode that already has a file —
+quality upgrades and propers of episodes you have are out of scope; Sonarr's
+own upgrade handling still deals with those. The timeline entry says how many
+files were skipped for this reason.
+
+"Nothing to import" is a normal result: every episode is already in the
+library, or Sonarr rejected the files. The reasons are logged.
+
+### Requirements
+
+- **qBittorrent or Transmission.** Only clients that report live status can
+  tell Marauder a download finished, and they also report the save path and
+  file list. With Deluge, µTorrent or the download folder the option does
+  nothing.
+- **The progress watcher must be on** (`MARAUDER_PROGRESS_WATCHER_ENABLED`,
+  default on).
+- **Sonarr must be able to read the files.** If Sonarr sees the download
+  directory under a different path than the torrent client (different
+  containers or hosts), add a **Remote Path Mapping** in Sonarr
+  (Settings → Download Clients). Like Sonarr, Marauder keys a mapping by the
+  client's **host** as well as the path. The host it uses is the one in the
+  client's URL in Marauder (e.g. `qbittorrent` for `http://qbittorrent:8080`),
+  compared case-insensitively and without a port:
+  - if any mapping names that host, only those mappings are used, and the
+    longest matching remote path wins;
+  - if none does (Sonarr may know the client by another name or an IP), the
+    path is rewritten only when **every** mapping whose remote path contains it
+    — of any length, for any host — rewrites it to the same place. Otherwise
+    the import is refused as ambiguous rather than risk applying another
+    client's mapping. Use the same host name in Sonarr's download client
+    settings as in Marauder's client URL to avoid this;
+  - with no matching mapping at all the path is passed unchanged.
+
+### Topics created before this feature, and re-pointed instances
+
+The option needs to know which Sonarr instance and series a topic belongs to.
+Topics created from now on carry both, together with a short one-way
+fingerprint of the Sonarr URL they were linked against (a series id only means
+something on the server that issued it; the URL itself is not stored on the
+topic). An older Sonarr-created topic gets the link the next time Sonarr grabs
+that release again; until then its updates are skipped (*topic predates the
+Sonarr instance/series link*). If an instance's URL is changed to point at
+another server, its topics' links go stale (*link_stale*) until a fresh grab
+re-links them. Changing only the API key, or the URL's letter case or trailing
+slash, does not.
+
+### Interactions
+
+- **Replace previous version on update:** the new torrent is delivered first
+  and the old one removed afterwards; the import only ever reads the new
+  torrent's files, so deleting the old data does not affect it.
+- **Download only new files:** skipped files are never offered to Sonarr.
+- **Notify-only topics:** nothing is delivered, so nothing is imported — and a
+  topic switched to notify-only while a delivery is still downloading is not
+  imported either.
+- **Per-episode trackers (LostFilm):** every delivered episode torrent other
+  than the ones Sonarr grabbed is imported.
+- **Instance deleted or disabled after the topic was created:** the import is
+  skipped and logged; the topic itself is unaffected.
+
+### Watching it
+
+Each attempt lands on the topic's timeline as **Sonarr import** (warn-coloured
+when it failed) — never as a notification. The metric
+`marauder_sonarr_imports_total{result}` counts every decision; `result` is one
+of `requested`, `nothing_to_import`, `nothing_found`, `not_sonarr`,
+`notify_only`, `own_grab`, `no_link`, `link_stale`, `instance_gone`,
+`instance_disabled`, `option_off`, `topic_gone`, `torrent_gone`, `not_ready`,
+`no_file_list`, `path_ambiguous`, `dropped`, `error`. Marauder does not follow
+the command to completion; Sonarr's **Activity → Queue** and **History** show
+its result.
 
 ## Trying it out
 

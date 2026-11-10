@@ -195,6 +195,9 @@ const en: Record<string, string> = {
   "settings.sonarr.categoryHintFree": "Nested under the client's base download folder.",
   "settings.sonarr.defaultDownloadDir": "Default download directory",
   "settings.sonarr.updateExisting": "Realign existing topics to these defaults",
+  "settings.sonarr.importOnComplete": "Import updates when they finish downloading",
+  "settings.sonarr.importOnCompleteHint":
+    "When a topic this instance created gets an updated torrent and it finishes downloading, Marauder asks Sonarr to import its new episodes (copy mode, so the torrent keeps seeding). Episodes already in the library are never replaced. Needs a qBittorrent or Transmission client.",
   "settings.sonarr.lastSeen": "Last poll",
   "settings.sonarr.test": "Test connection",
   "settings.sonarr.testing": "Testing…",
@@ -402,6 +405,7 @@ const en: Record<string, string> = {
   "events.check_failed": "error",
   "events.session_expired": "session expired",
   "events.topic_reset": "topic reset",
+  "events.sonarr_import": "Sonarr import",
 
   // Topic history timeline
   "topics.history.empty": "No history yet",

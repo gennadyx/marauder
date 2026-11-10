@@ -207,6 +207,15 @@ export function SonarrInstanceForm({ initial, clients, trackers, onDone, onCance
         onChange={(v) => update("update_existing", v)}
       />
 
+      <div className="space-y-1">
+        <CheckRow
+          label={t("settings.sonarr.importOnComplete")}
+          checked={form.import_on_complete}
+          onChange={(v) => update("import_on_complete", v)}
+        />
+        <p className="text-xs text-muted-foreground">{t("settings.sonarr.importOnCompleteHint")}</p>
+      </div>
+
       {message && (
         <div
           className={cn(

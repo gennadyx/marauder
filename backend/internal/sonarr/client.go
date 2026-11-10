@@ -4,8 +4,10 @@
 package sonarr
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +17,10 @@ import (
 	"time"
 )
 
-// Client is a typed, read-only Sonarr v3 API client.
+// Client is a typed Sonarr v3 API client. It reads history, status, remote
+// path mappings and manual-import candidates, and writes exactly two things,
+// both for import-on-complete: a manual-import reprocess (which only
+// evaluates files, it changes nothing) and the ManualImport command.
 type Client struct {
 	baseURL string
 	apiKey  string
@@ -56,12 +61,25 @@ type SystemStatus struct {
 // HistoryRecord is one Sonarr history entry. Date and Data.NzbInfoURL drive
 // polling; SourceTitle plus Data.TorrentInfoHash let tracker plugins preserve
 // the exact quality/codec variant Sonarr grabbed.
+//
+// SeriesID is the Sonarr series the grab was for (present on every history
+// record in v3 and v4); the poller stores it on the topic so a completed
+// update can be imported into that series without guessing it from a name.
+// DownloadID is the download client's id for the grab (the infohash, for a
+// torrent client), kept as a fallback identity of Sonarr's own torrent.
 type HistoryRecord struct {
 	ID          int         `json:"id"`
 	Date        time.Time   `json:"date"`
 	EventType   string      `json:"eventType"`
 	SourceTitle string      `json:"sourceTitle"`
+	SeriesID    int         `json:"seriesId"`
+	DownloadID  string      `json:"downloadId"`
 	Data        HistoryData `json:"data"`
+
+	// batchGrabHashes is set by the poller, never decoded: the grab hashes
+	// of every record for this URL in the same poll, which the newest-record
+	// dedup would otherwise drop (see recordGrabHashes).
+	batchGrabHashes []string
 }
 
 // HistoryData is the nested data blob. NzbInfoURL is the tracker topic page
@@ -116,20 +134,45 @@ func (c *Client) GrabHistorySince(ctx context.Context, since time.Time) ([]Histo
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, q url.Values, out any) error {
+	return c.doJSON(ctx, http.MethodGet, path, q, nil, out)
+}
+
+// postJSON sends body as JSON and decodes the response into out (nil skips
+// decoding). Same guards as getJSON: the client timeout, the API key header,
+// no redirects, and a capped response body.
+func (c *Client) postJSON(ctx context.Context, path string, body, out any) error {
+	return c.doJSON(ctx, http.MethodPost, path, nil, body, out)
+}
+
+// doJSON is the one request path. Errors name the method, the API path and
+// the status only — never the base URL's credentials, the API key, the query
+// string (a folder path) or the response body.
+func (c *Client) doJSON(ctx context.Context, method, path string, q url.Values, in, out any) error {
 	u := c.baseURL + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	var reqBody io.Reader
+	if in != nil {
+		buf, err := json.Marshal(in)
+		if err != nil {
+			return fmt.Errorf("sonarr: encode %s %s: %w", method, path, err)
+		}
+		reqBody = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, reqBody)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("X-Api-Key", c.apiKey)
 	req.Header.Set("Accept", "application/json")
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("sonarr: GET %s: %w", path, err)
+		return fmt.Errorf("sonarr: %s %s: %w", method, path, redactURLError(err))
 	}
 	defer resp.Body.Close()
 
@@ -137,7 +180,10 @@ func (c *Client) getJSON(ctx context.Context, path string, q url.Values, out any
 	case resp.StatusCode == http.StatusUnauthorized:
 		return fmt.Errorf("sonarr: unauthorized (check API key)")
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return fmt.Errorf("sonarr: GET %s: unexpected status %d", path, resp.StatusCode)
+		return fmt.Errorf("sonarr: %s %s: unexpected status %d", method, path, resp.StatusCode)
+	}
+	if out == nil {
+		return nil
 	}
 
 	const maxBody = 16 << 20 // 16 MiB cap on the response body
@@ -149,4 +195,16 @@ func (c *Client) getJSON(ctx context.Context, path string, q url.Values, out any
 		return fmt.Errorf("sonarr: decode %s: %w", path, err)
 	}
 	return nil
+}
+
+// redactURLError strips the request URL from a transport error. net/http
+// wraps every transport failure in a *url.Error whose message embeds the full
+// URL, query string included — for a manual-import lookup that is a folder
+// path, and for a URL configured with userinfo it would be a credential.
+func redactURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
 }

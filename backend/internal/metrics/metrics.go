@@ -261,6 +261,17 @@ var (
 		},
 		[]string{"outcome"}, // created|updated|duplicate|no_tracker|disallowed|error
 	)
+
+	// SonarrImportsTotal counts import-on-complete decisions, one per completed
+	// delivery handed to the importer. The result set is fixed in
+	// sonarr/importer.go (result* constants) so the label stays bounded.
+	SonarrImportsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "marauder_sonarr_imports_total",
+			Help: "Sonarr import-on-complete outcomes for completed deliveries, partitioned by result.",
+		},
+		[]string{"result"},
+	)
 )
 
 // Client metrics ---------------------------------------------------------

@@ -164,7 +164,7 @@ func (p *plugin) Status(ctx context.Context, rawConfig []byte, hashes []string) 
 		ids[i] = h
 	}
 	resp, err := p.do(ctx, c, "torrent-get", map[string]any{
-		"fields": []string{"hashString", "percentDone", "status"},
+		"fields": []string{"hashString", "percentDone", "status", "downloadDir"},
 		"ids":    ids,
 	})
 	if err != nil {
@@ -181,10 +181,12 @@ func (p *plugin) Status(ctx context.Context, rawConfig []byte, hashes []string) 
 		hash, _ := m["hashString"].(string)
 		pct, _ := m["percentDone"].(float64)
 		code, _ := m["status"].(float64)
+		dir, _ := m["downloadDir"].(string)
 		out = append(out, registry.TorrentStatus{
 			Hash:        strings.ToLower(hash),
 			PercentDone: pct,
 			State:       transmissionState(int(code)),
+			SavePath:    dir,
 		})
 	}
 	return out, nil

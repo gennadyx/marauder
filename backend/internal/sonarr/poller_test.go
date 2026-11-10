@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"github.com/artyomsv/marauder/backend/internal/crypto"
 	"github.com/artyomsv/marauder/backend/internal/db/repo"
 	"github.com/artyomsv/marauder/backend/internal/domain"
+	"github.com/artyomsv/marauder/backend/internal/extra"
 	"github.com/artyomsv/marauder/backend/internal/plugins/registry"
 )
 
@@ -289,7 +292,7 @@ func TestPoller_SeasonPackDedup(t *testing.T) {
 			Data: HistoryData{NzbInfoURL: fakeURL, TorrentInfoHash: "newest-hash"},
 		},
 		{
-			ID: 2, Date: now.Add(-time.Minute), SourceTitle: "older HEVC grab",
+			ID: 2, Date: now.Add(-time.Minute), SourceTitle: "older HEVC grab", DownloadID: "OLDER-DL",
 			Data: HistoryData{NzbInfoURL: fakeURL, TorrentInfoHash: "older-hash"},
 		},
 		{
@@ -314,6 +317,22 @@ func TestPoller_SeasonPackDedup(t *testing.T) {
 		ts.created[0].Extra[domain.TopicExtraSonarrSourceTitle] != "newest AVC grab" {
 		t.Errorf("dedup should retain newest grab metadata, got %#v", ts.created[0].Extra)
 	}
+	// ...but every grab in the batch is Sonarr's own download: all of their
+	// hashes, from both sources, must be in the grab-hash set.
+	set := ts.created[0].Extra[domain.TopicExtraSonarrGrabHashes]
+	for _, h := range []string{"newest-hash", "older-hash", "OLDER-DL", "oldest-hash"} {
+		if !hasGrabHash(set, h) {
+			t.Errorf("grab-hash set %v is missing %q", set, h)
+		}
+	}
+}
+
+// hasGrabHash reports whether a stored grab-hash set ([]string in memory,
+// []any after JSONB) holds h, case-insensitively.
+func hasGrabHash(set any, h string) bool {
+	return slices.ContainsFunc(extra.StringSlice(map[string]any{"k": set}, "k"), func(v string) bool {
+		return strings.EqualFold(v, h)
+	})
 }
 
 func TestPoller_DuplicateSkipped(t *testing.T) {
@@ -470,13 +489,21 @@ func TestPoller_ManualTopicDoesNotRefreshVariantMetadata(t *testing.T) {
 }
 
 func TestMergeSonarrTopicExtraNoOp(t *testing.T) {
+	inst := baseInstance("http://sonarr.invalid", uuid.New())
 	existing := map[string]any{
 		"provider":                         "aniliberty",
 		domain.TopicExtraSonarrInfoHash:    "same-hash",
 		domain.TopicExtraSonarrSourceTitle: "same title",
+		domain.TopicExtraSonarrInstanceID:  inst.ID.String(),
+		domain.TopicExtraSonarrEndpoint:    endpointFingerprint(inst.URL),
+		// JSONB hands numbers back as float64; equal to the incoming int 42.
+		domain.TopicExtraSonarrSeriesID: float64(42),
+		// ...and string lists as []any.
+		domain.TopicExtraSonarrGrabHashes: []any{"same-hash"},
 	}
-	merged, changed := mergeSonarrTopicExtra(existing, HistoryRecord{
+	merged, changed := mergeSonarrTopicExtra(existing, inst, HistoryRecord{
 		SourceTitle: "same title",
+		SeriesID:    42,
 		Data:        HistoryData{TorrentInfoHash: "same-hash"},
 	})
 
@@ -864,5 +891,173 @@ func TestPoller_NoCredentialStored_StillCreatesTheTopic(t *testing.T) {
 	}
 	if !ts.created[0].DisplayNameIsPlaceholder {
 		t.Error("an unresolved name must be flagged a placeholder so the scheduler self-heals it")
+	}
+}
+
+func TestPoller_NewTopicCarriesInstanceAndSeriesLink(t *testing.T) {
+	srv := historyServer([]HistoryRecord{
+		{
+			ID: 1, Date: time.Now().UTC(), SourceTitle: "grab", SeriesID: 42,
+			Data: HistoryData{NzbInfoURL: fakeURL, TorrentInfoHash: "grab-hash"},
+		},
+	})
+	defer srv.Close()
+
+	owner := uuid.New()
+	past := time.Now().Add(-time.Hour).UTC()
+	inst := baseInstance(srv.URL, owner)
+	inst.LastSeenAt = &past
+	ts := &fakeTopics{byURL: map[string]*domain.Topic{}}
+
+	newTestPoller(&fakeInstances{}, fakeAdmin{}, ts).pollOnce(context.Background(), inst)
+
+	if len(ts.created) != 1 {
+		t.Fatalf("want 1 created topic, got %d", len(ts.created))
+	}
+	got := ts.created[0].Extra
+	if got[domain.TopicExtraSonarrInstanceID] != inst.ID.String() || got[domain.TopicExtraSonarrSeriesID] != 42 ||
+		got[domain.TopicExtraSonarrEndpoint] != endpointFingerprint(inst.URL) {
+		t.Errorf("instance/series/endpoint link not stored: %#v", got)
+	}
+	if fp, _ := got[domain.TopicExtraSonarrEndpoint].(string); strings.Contains(srv.URL, fp) || len(fp) != 16 {
+		t.Errorf("endpoint must be a short one-way fingerprint, not the URL: %q", fp)
+	}
+}
+
+func TestPoller_LegacyTopicLinkBackfilledOnNextGrab(t *testing.T) {
+	srv := historyServer([]HistoryRecord{
+		// An earlier grab (A) of the same URL in the same batch: the dedup keeps
+		// the newest record (B) for the metadata, but A's hash must still land
+		// in the grab-hash set.
+		{
+			ID: 1, Date: time.Now().Add(-time.Minute).UTC(), SourceTitle: "older title", SeriesID: 7,
+			Data: HistoryData{NzbInfoURL: fakeURL, TorrentInfoHash: "older-grab-hash"},
+		},
+		{
+			ID: 2, Date: time.Now().UTC(), SourceTitle: "same title", SeriesID: 7,
+			Data: HistoryData{NzbInfoURL: fakeURL, TorrentInfoHash: "same-hash"},
+		},
+	})
+	defer srv.Close()
+
+	owner := uuid.New()
+	past := time.Now().Add(-time.Hour).UTC()
+	inst := baseInstance(srv.URL, owner)
+	inst.LastSeenAt = &past
+	ts := &fakeTopics{byURL: map[string]*domain.Topic{
+		fakeURL: {
+			ID: uuid.New(), URL: fakeURL, DisplayName: "Legacy",
+			Extra: map[string]any{
+				"source":                           topicSourceSonarr,
+				domain.TopicExtraSonarrInfoHash:    "same-hash",
+				domain.TopicExtraSonarrSourceTitle: "same title",
+			},
+		},
+	}}
+
+	newTestPoller(&fakeInstances{}, fakeAdmin{}, ts).pollOnce(context.Background(), inst)
+
+	if len(ts.updated) != 1 {
+		t.Fatalf("an unchanged variant must still backfill the missing link; got %d updates", len(ts.updated))
+	}
+	got := ts.updated[0].Extra
+	if got[domain.TopicExtraSonarrInstanceID] != inst.ID.String() || got[domain.TopicExtraSonarrSeriesID] != 7 ||
+		got[domain.TopicExtraSonarrEndpoint] != endpointFingerprint(inst.URL) {
+		t.Errorf("link not backfilled: %#v", got)
+	}
+	if got[domain.TopicExtraSonarrInfoHash] != "same-hash" {
+		t.Errorf("the scalar infohash keeps newest-wins: %v", got[domain.TopicExtraSonarrInfoHash])
+	}
+	for _, h := range []string{"older-grab-hash", "same-hash"} {
+		if !hasGrabHash(got[domain.TopicExtraSonarrGrabHashes], h) {
+			t.Errorf("grab-hash set %v is missing %q", got[domain.TopicExtraSonarrGrabHashes], h)
+		}
+	}
+}
+
+func TestSonarrTopicExtra_LinkIsAPairOrNothing(t *testing.T) {
+	inst := baseInstance("http://sonarr.invalid", uuid.New())
+	got := sonarrTopicExtra(inst, HistoryRecord{SourceTitle: "t", Data: HistoryData{TorrentInfoHash: "h"}})
+	if _, ok := got[domain.TopicExtraSonarrInstanceID]; ok {
+		t.Errorf("an instance id without a series id must not be written: %#v", got)
+	}
+	if _, ok := got[domain.TopicExtraSonarrSeriesID]; ok {
+		t.Errorf("no series id must be written for SeriesID 0: %#v", got)
+	}
+	if _, ok := got[domain.TopicExtraSonarrEndpoint]; ok {
+		t.Errorf("no endpoint fingerprint must be written without the pair: %#v", got)
+	}
+}
+
+func TestMergeSonarrTopicExtra_AccumulatesGrabHashes(t *testing.T) {
+	inst := baseInstance("http://sonarr.invalid", uuid.New())
+	// A legacy topic: only the single-value key, no set yet.
+	existing := map[string]any{domain.TopicExtraSonarrInfoHash: "hash-a"}
+	merged, changed := mergeSonarrTopicExtra(existing, inst, HistoryRecord{
+		DownloadID: "HASH-B", Data: HistoryData{TorrentInfoHash: "hash-b"},
+	})
+	if !changed {
+		t.Fatal("a new grab must change the topic")
+	}
+	if merged[domain.TopicExtraSonarrInfoHash] != "hash-b" {
+		t.Errorf("the variant key must still follow the newest grab: %#v", merged)
+	}
+	got, _ := merged[domain.TopicExtraSonarrGrabHashes].([]string)
+	// "HASH-B" is the same hash as "hash-b" case-insensitively: kept once.
+	if len(got) != 2 || got[0] != "hash-a" || !strings.EqualFold(got[1], "hash-b") {
+		t.Errorf("grab hashes = %v, want the legacy hash kept and the new one appended once", got)
+	}
+}
+
+func TestAppendGrabHashes_BoundedNewestKept(t *testing.T) {
+	var set []string
+	for n := 0; n < maxGrabHashes+3; n++ {
+		set = appendGrabHashes(set, []string{"h" + strconv.Itoa(n)})
+	}
+	if len(set) != maxGrabHashes || set[0] != "h3" || set[len(set)-1] != "h12" {
+		t.Errorf("set = %v, want the newest %d", set, maxGrabHashes)
+	}
+	set = appendGrabHashes(set, []string{"H3"})
+	if set[len(set)-1] != "H3" || len(set) != maxGrabHashes {
+		t.Errorf("a re-seen hash moves to the end without duplicating: %v", set)
+	}
+}
+
+func TestMergeSonarrTopicExtra_RenewsAStaleLink(t *testing.T) {
+	inst := baseInstance("http://new-sonarr.invalid:8989", uuid.New())
+	existing := map[string]any{
+		domain.TopicExtraSonarrInstanceID: inst.ID.String(),
+		domain.TopicExtraSonarrSeriesID:   float64(42),
+		domain.TopicExtraSonarrEndpoint:   endpointFingerprint("http://old-sonarr.invalid:8989"),
+	}
+	merged, changed := mergeSonarrTopicExtra(existing, inst, HistoryRecord{SeriesID: 99})
+	if !changed || merged[domain.TopicExtraSonarrSeriesID] != 99 ||
+		merged[domain.TopicExtraSonarrEndpoint] != endpointFingerprint(inst.URL) {
+		t.Errorf("a fresh grab must re-link to the instance's current server: %#v", merged)
+	}
+}
+
+func TestEndpointFingerprint(t *testing.T) {
+	base := endpointFingerprint("http://sonarr:8989")
+	for _, same := range []string{"http://sonarr:8989/", " HTTP://Sonarr:8989 ", "http://user:pw@sonarr:8989"} {
+		if endpointFingerprint(same) != base {
+			t.Errorf("%q must fingerprint like http://sonarr:8989", same)
+		}
+	}
+	// An escaped slash is a different request target from a real one; a
+	// trailing slash is not.
+	if endpointFingerprint("https://proxy/sonarr%2Fblue") == endpointFingerprint("https://proxy/sonarr/blue") {
+		t.Error("https://proxy/sonarr%2Fblue and https://proxy/sonarr/blue must fingerprint differently")
+	}
+	if endpointFingerprint("https://proxy/sonarr/blue/") != endpointFingerprint("https://proxy/sonarr/blue") {
+		t.Error("a trailing slash alone must not change the fingerprint")
+	}
+	for _, other := range []string{"http://sonarr:8990", "http://other:8989", "http://sonarr:8989/sonarr"} {
+		if endpointFingerprint(other) == base {
+			t.Errorf("%q is another endpoint and must fingerprint differently", other)
+		}
+	}
+	if endpointFingerprint("") != "" {
+		t.Error("an empty URL has no fingerprint")
 	}
 }

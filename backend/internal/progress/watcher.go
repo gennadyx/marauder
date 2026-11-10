@@ -6,6 +6,11 @@ package progress
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -43,6 +48,49 @@ type Emitter interface {
 	Emit(ctx context.Context, ev events.Event)
 }
 
+// Inspection is a fresh read of one torrent from the client that reported it
+// complete. Found is false when the client no longer knows the torrent.
+// FilesSupported is false when the client cannot list files (it does not
+// implement registry.WithFileSelection); Files is then nil.
+type Inspection struct {
+	Status         registry.TorrentStatus
+	Found          bool
+	Files          []domain.ClientFile
+	FilesSupported bool
+}
+
+// Completion is handed to a CompletionHook once per delivery, after the
+// watcher won that delivery's NULL→now() completed_at transition.
+type Completion struct {
+	Delivery domain.InFlightDelivery
+	// ClientHost is the host name (lower-case; no scheme, port, path or
+	// credentials) Marauder reaches the delivering client at, read from the
+	// client config's "url" field — the key both WithStatus clients
+	// (qBittorrent, Transmission) use. Empty when it cannot be read. Sonarr's
+	// remote path mappings are keyed by the client's host.
+	ClientHost string
+	// Inspect re-reads the torrent (status, save path, file list) from the
+	// client that holds it, on demand and on the caller's context. It stays
+	// valid after DeliveryCompleted returns and is safe to call from any
+	// goroutine, so a consumer can wait for the client to settle (qBittorrent
+	// reports 100% while it is still moving files out of its temp folder)
+	// before it reads where the files are. Its errors are sanitised: they
+	// name the step and a class (timed out, unreachable, refused) and never
+	// carry the client's URL or a response body.
+	Inspect func(ctx context.Context) (Inspection, error)
+}
+
+// CompletionHook is an optional consumer of completed deliveries — the Sonarr
+// import-on-complete importer in production. The watcher stays ignorant of
+// what the consumer does. DeliveryCompleted is called synchronously from the
+// poll loop and MUST return promptly: queue the work, never do it inline. It
+// is called at most once per delivery (a restart never re-fires it, because
+// the NULL→now() transition is only won once), and nothing it does can fail
+// or repeat the completion.
+type CompletionHook interface {
+	DeliveryCompleted(c Completion)
+}
+
 // Config holds the watcher's runtime knobs.
 type Config struct {
 	PollInterval  time.Duration
@@ -69,6 +117,7 @@ type Watcher struct {
 	log          zerolog.Logger
 	statusLookup statusLookupFn
 	lastSeen     map[string]progressKey
+	hook         CompletionHook
 }
 
 // New constructs a Watcher.
@@ -86,6 +135,12 @@ func New(deliveries Deliveries, clients ClientResolver, dec Decryptor, emit Emit
 		},
 		lastSeen: map[string]progressKey{},
 	}
+}
+
+// SetCompletionHook installs the consumer called after each won completion.
+// Call it before Start; nil disables the hook.
+func (w *Watcher) SetCompletionHook(h CompletionHook) {
+	w.hook = h
 }
 
 // Start launches the poll loop in a goroutine and returns. The loop stops when
@@ -115,6 +170,7 @@ func (w *Watcher) run(ctx context.Context) {
 type resolvedClient struct {
 	plugin     registry.WithStatus
 	rawConfig  []byte
+	host       string
 	deliveries []*domain.InFlightDelivery
 }
 
@@ -174,7 +230,7 @@ func (w *Watcher) resolveClient(ctx context.Context, d *domain.InFlightDelivery)
 		w.log.Warn().Err(derr).Str("client", client.ClientName).Msg("decrypt client config failed")
 		return nil
 	}
-	return &resolvedClient{plugin: plugin, rawConfig: raw}
+	return &resolvedClient{plugin: plugin, rawConfig: raw, host: clientHost(raw)}
 }
 
 // checkClient queries one client, completes any seeded/100% deliveries, and
@@ -207,7 +263,7 @@ func (w *Watcher) checkClient(ctx context.Context, rc *resolvedClient) {
 		// Completion wins: seeding or 100% → mark + (on won transition)
 		// download.completed. No progress event for a finished torrent.
 		if st.State == registry.StateSeeding || st.PercentDone >= 1.0 {
-			w.complete(ctx, d)
+			w.complete(ctx, rc, d)
 			delete(w.lastSeen, hash) // stop tracking a finished torrent
 			continue
 		}
@@ -226,7 +282,7 @@ func (w *Watcher) checkClient(ctx context.Context, rc *resolvedClient) {
 
 // complete marks the delivery done and, only on winning the NULL→now()
 // transition, emits download.completed (so a restart never re-notifies).
-func (w *Watcher) complete(ctx context.Context, d *domain.InFlightDelivery) {
+func (w *Watcher) complete(ctx context.Context, rc *resolvedClient, d *domain.InFlightDelivery) {
 	won, err := w.deliveries.MarkCompleted(ctx, d.DeliveryID)
 	if err != nil {
 		w.log.Warn().Err(err).Str("delivery_id", d.DeliveryID.String()).Msg("mark completed failed")
@@ -242,4 +298,93 @@ func (w *Watcher) complete(ctx context.Context, d *domain.InFlightDelivery) {
 		Title: d.DisplayName, Body: "Finished downloading: " + d.Label,
 		Link: w.cfg.PublicBaseURL + "/topics", SourceURL: d.URL,
 	})
+	w.notifyHook(rc, d)
+}
+
+// notifyHook hands the won completion to the hook, if any. A panicking hook
+// is contained here: the completion is already persisted and announced, and
+// a consumer bug must not take the poll loop down with it.
+func (w *Watcher) notifyHook(rc *resolvedClient, d *domain.InFlightDelivery) {
+	if w.hook == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			w.log.Error().Interface("panic", r).Str("delivery_id", d.DeliveryID.String()).
+				Msg("completion hook panicked; completion kept")
+		}
+	}()
+	w.hook.DeliveryCompleted(Completion{
+		Delivery:   *d,
+		ClientHost: rc.host,
+		Inspect:    inspector(rc.plugin, rc.rawConfig, d.Infohash),
+	})
+}
+
+// clientHost reads the host name out of a client config's "url" field. Only
+// the host leaves this function — the config also holds credentials.
+func clientHost(rawConfig []byte) string {
+	var cfg struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(rawConfig, &cfg); err != nil {
+		return ""
+	}
+	u, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// sanitizeClientError reduces a torrent-client error to its step and class.
+// A transport failure is a *url.Error whose text is the full request URL —
+// which may carry credentials in a configured RPC URL — and a plugin's status
+// error embeds the response body; neither may reach a log line. The context
+// sentinels stay matchable with errors.Is.
+func sanitizeClientError(step string, err error) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%s: torrent client timed out: %w", step, context.DeadlineExceeded)
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("%s: cancelled: %w", step, context.Canceled)
+	}
+	var netErr net.Error // *url.Error, *net.OpError and *net.DNSError all implement it
+	if errors.As(err, &netErr) {
+		return fmt.Errorf("%s: torrent client unreachable", step)
+	}
+	return fmt.Errorf("%s: torrent client returned an error", step)
+}
+
+// inspector binds one torrent's client to an on-demand re-read. It captures
+// the decrypted config, so the closure must stay in-process.
+func inspector(plugin registry.WithStatus, rawConfig []byte, hash string) func(context.Context) (Inspection, error) {
+	return func(ctx context.Context) (Inspection, error) {
+		var out Inspection
+		statuses, err := plugin.Status(ctx, rawConfig, []string{hash})
+		if err != nil {
+			return out, sanitizeClientError("status", err)
+		}
+		for _, st := range statuses {
+			if strings.EqualFold(st.Hash, hash) {
+				out.Status = st
+				out.Found = true
+				break
+			}
+		}
+		if !out.Found {
+			return out, nil
+		}
+		lister, ok := plugin.(registry.WithFileSelection)
+		if !ok {
+			return out, nil
+		}
+		out.FilesSupported = true
+		files, err := lister.Files(ctx, rawConfig, hash)
+		if err != nil {
+			return out, sanitizeClientError("files", err)
+		}
+		out.Files = files
+		return out, nil
+	}
 }

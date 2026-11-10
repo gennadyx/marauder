@@ -14,6 +14,7 @@ export interface SonarrForm {
   default_replace_on_update: boolean | null;
   default_replace_delete_data: boolean | null;
   update_existing: boolean;
+  import_on_complete: boolean;
 }
 
 export const EMPTY_FORM: SonarrForm = {
@@ -29,6 +30,7 @@ export const EMPTY_FORM: SonarrForm = {
   default_replace_on_update: null,
   default_replace_delete_data: null,
   update_existing: false,
+  import_on_complete: false,
 };
 
 /** Seed the form from a server instance. The API key never round-trips. */
@@ -46,6 +48,7 @@ export function fromInstance(c: SonarrInstance): SonarrForm {
     default_replace_on_update: c.default_replace_on_update,
     default_replace_delete_data: c.default_replace_delete_data,
     update_existing: c.update_existing,
+    import_on_complete: c.import_on_complete,
   };
 }
 
@@ -64,6 +67,7 @@ export function toBody(f: SonarrForm): SonarrInstanceBody {
     default_replace_on_update: f.default_replace_on_update,
     default_replace_delete_data: f.default_replace_delete_data,
     update_existing: f.update_existing,
+    import_on_complete: f.import_on_complete,
   };
 }
 
@@ -86,6 +90,7 @@ export function instanceToBody(c: SonarrInstance): SonarrInstanceBody {
     default_replace_on_update: c.default_replace_on_update,
     default_replace_delete_data: c.default_replace_delete_data,
     update_existing: c.update_existing,
+    import_on_complete: c.import_on_complete,
   };
 }
 

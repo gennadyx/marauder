@@ -17,6 +17,7 @@ const instance: SonarrInstance = {
   default_replace_on_update: null,
   default_replace_delete_data: null,
   update_existing: true,
+  import_on_complete: false,
   last_seen_at: "2026-06-27T00:00:00Z",
   created_at: "2026-06-27T00:00:00Z",
   updated_at: "2026-06-27T00:00:00Z",
@@ -61,5 +62,14 @@ describe("replace default overrides", () => {
       expect(toBody(fromInstance(source))).toMatchObject(expected);
       expect(instanceToBody(source)).toMatchObject(expected);
     }
+  });
+});
+
+describe("import on complete", () => {
+  it.each([true, false])("round-trips import_on_complete=%s through every helper", (value) => {
+    const source = { ...instance, import_on_complete: value };
+    expect(fromInstance(source).import_on_complete).toBe(value);
+    expect(toBody(fromInstance(source)).import_on_complete).toBe(value);
+    expect(instanceToBody(source).import_on_complete).toBe(value);
   });
 });

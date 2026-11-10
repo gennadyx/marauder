@@ -92,6 +92,7 @@ export const EVENT_LABELS: Record<string, string> = {
   "download.completed": "events.download_completed",
   "check.failed": "events.check_failed",
   "session.expired": "events.session_expired",
+  "sonarr.import": "events.sonarr_import",
   // legacy aliases still present on older notifier rows
   updated: "events.release_found",
   error: "events.check_failed",

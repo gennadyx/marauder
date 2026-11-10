@@ -266,6 +266,8 @@ export interface SonarrInstance {
   default_replace_on_update: boolean | null;
   default_replace_delete_data: boolean | null;
   update_existing: boolean;
+  // Ask Sonarr to import an updated torrent once it finishes downloading.
+  import_on_complete: boolean;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
@@ -286,6 +288,7 @@ export interface SonarrInstanceBody {
   default_replace_on_update: boolean | null;
   default_replace_delete_data: boolean | null;
   update_existing: boolean;
+  import_on_complete: boolean;
 }
 
 export interface SonarrTestResult {

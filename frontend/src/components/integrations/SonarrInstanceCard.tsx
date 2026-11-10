@@ -124,6 +124,8 @@ export function SonarrInstanceCard({ instance, clients, trackers }: Props) {
           <dd className="text-foreground">{overrideText(instance.default_replace_on_update)}</dd>
           <dt>{t("settings.sonarr.defaultReplaceDeleteData")}</dt>
           <dd className="text-foreground">{overrideText(instance.default_replace_delete_data)}</dd>
+          <dt>{t("settings.sonarr.importOnComplete")}</dt>
+          <dd className="text-foreground">{t(instance.import_on_complete ? "common.on" : "common.off")}</dd>
           <dt>{t("settings.sonarr.lastSeen")}</dt>
           <dd className="text-foreground">
             {instance.last_seen_at ? new Date(instance.last_seen_at).toLocaleString() : "—"}

@@ -45,6 +45,7 @@ const editableInstance = {
   default_replace_on_update: null,
   default_replace_delete_data: null,
   update_existing: false,
+  import_on_complete: false,
   last_seen_at: null,
   created_at: "2026-06-27T00:00:00Z",
   updated_at: "2026-06-27T00:00:00Z",
@@ -117,6 +118,7 @@ describe("SonarrInstanceForm", () => {
       default_replace_on_update: null,
       default_replace_delete_data: null,
       update_existing: false,
+      import_on_complete: false,
       last_seen_at: null,
       created_at: "2026-06-27T00:00:00Z",
       updated_at: "2026-06-27T00:00:00Z",
@@ -186,5 +188,37 @@ describe("Sonarr replace defaults", () => {
     await waitFor(() => expect(mockApi.getSettings).toHaveBeenCalled());
     expect(deleteData).toHaveValue("inherit");
     expect(deleteData).not.toBeDisabled();
+  });
+});
+
+describe("Sonarr import on complete", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockApi.getSettings.mockResolvedValue({ default_follow_tracker_title: false, default_replace_on_update: false, default_replace_delete_data: true });
+    mockApi.updateSonarrInstance.mockResolvedValue({});
+  });
+
+  it("starts unchecked and saves the opt-in", async () => {
+    wrap(<SonarrInstanceForm initial={editableInstance} clients={[]} trackers={[]} onDone={() => {}} onCancel={() => {}} />);
+    const box = screen.getByRole("checkbox", { name: /import updates when they finish downloading/i });
+    expect(box).not.toBeChecked();
+    await userEvent.click(box);
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(mockApi.updateSonarrInstance).toHaveBeenCalledWith("i1", expect.objectContaining({ import_on_complete: true })),
+    );
+  });
+
+  it("seeds the box from the stored instance", () => {
+    wrap(
+      <SonarrInstanceForm
+        initial={{ ...editableInstance, import_on_complete: true }}
+        clients={[]}
+        trackers={[]}
+        onDone={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    expect(screen.getByRole("checkbox", { name: /import updates when they finish downloading/i })).toBeChecked();
   });
 });

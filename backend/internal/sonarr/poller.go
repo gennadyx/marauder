@@ -14,6 +14,7 @@ import (
 	"github.com/artyomsv/marauder/backend/internal/crypto"
 	"github.com/artyomsv/marauder/backend/internal/db/repo"
 	"github.com/artyomsv/marauder/backend/internal/domain"
+	"github.com/artyomsv/marauder/backend/internal/extra"
 	"github.com/artyomsv/marauder/backend/internal/metrics"
 	"github.com/artyomsv/marauder/backend/internal/plugins/registry"
 	"github.com/artyomsv/marauder/backend/internal/topics"
@@ -201,6 +202,7 @@ func (p *Poller) processRecords(ctx context.Context, inst domain.SonarrInstance,
 	// every tick.
 	var maxDate time.Time
 	latestByURL := make(map[string]HistoryRecord, len(records))
+	grabsByURL := make(map[string][]HistoryRecord, len(records))
 	for _, rec := range records {
 		if rec.Date.After(maxDate) {
 			maxDate = rec.Date
@@ -209,6 +211,7 @@ func (p *Poller) processRecords(ctx context.Context, inst domain.SonarrInstance,
 		if url == "" {
 			continue
 		}
+		grabsByURL[url] = append(grabsByURL[url], rec)
 		current, exists := latestByURL[url]
 		if !exists || rec.Date.After(current.Date) || (rec.Date.Equal(current.Date) && rec.ID > current.ID) {
 			latestByURL[url] = rec
@@ -220,6 +223,9 @@ func (p *Poller) processRecords(ctx context.Context, inst domain.SonarrInstance,
 	// AniLiberty release becomes the monitored variant.
 	unique := make([]HistoryRecord, 0, len(latestByURL))
 	for _, rec := range latestByURL {
+		// Every grab of the URL in this batch is Sonarr's own download, not
+		// just the newest: carry all their hashes into the grab-hash set.
+		rec.batchGrabHashes = batchGrabHashes(grabsByURL[rec.Data.NzbInfoURL])
 		unique = append(unique, rec)
 	}
 	slices.SortFunc(unique, func(a, b HistoryRecord) int {
@@ -274,7 +280,7 @@ func (p *Poller) processURL(ctx context.Context, inst domain.SonarrInstance, own
 		Category:                 inst.DefaultCategory,
 		DownloadDir:              inst.DefaultDownloadDir,
 		Source:                   topicSourceSonarr,
-		Extra:                    sonarrTopicExtra(rec),
+		Extra:                    sonarrTopicExtra(inst, rec),
 		FollowTrackerTitle:       follow,
 		ReplaceOnUpdate:          replace.ReplaceOnUpdate,
 		DefaultReplaceDeleteData: &replace.ReplaceDeleteData,
@@ -325,15 +331,31 @@ func (p *Poller) topicDefaults(ctx context.Context, inst domain.SonarrInstance) 
 	return follow, replace
 }
 
-func sonarrTopicExtra(rec HistoryRecord) map[string]any {
-	extra := map[string]any{}
+// sonarrTopicExtra is the Sonarr identity a grab stamps on its topic: the
+// grabbed variant (infohash, source title), the grab-hash set, and the link
+// back to the instance and series, which import-on-complete needs. The
+// instance id, series id and endpoint fingerprint are written together or not
+// at all — a series id is only valid on the server that issued it.
+func sonarrTopicExtra(inst domain.SonarrInstance, rec HistoryRecord) map[string]any {
+	out := map[string]any{}
 	if value := rec.Data.TorrentInfoHash; value != "" {
-		extra[domain.TopicExtraSonarrInfoHash] = value
+		out[domain.TopicExtraSonarrInfoHash] = value
 	}
 	if value := rec.SourceTitle; value != "" {
-		extra[domain.TopicExtraSonarrSourceTitle] = value
+		out[domain.TopicExtraSonarrSourceTitle] = value
 	}
-	return extra
+	if value := rec.DownloadID; value != "" {
+		out[domain.TopicExtraSonarrDownloadID] = value
+	}
+	if hashes := recordGrabHashes(rec); len(hashes) > 0 {
+		out[domain.TopicExtraSonarrGrabHashes] = hashes
+	}
+	if fp := endpointFingerprint(inst.URL); inst.ID != uuid.Nil && rec.SeriesID > 0 && fp != "" {
+		out[domain.TopicExtraSonarrInstanceID] = inst.ID.String()
+		out[domain.TopicExtraSonarrSeriesID] = rec.SeriesID
+		out[domain.TopicExtraSonarrEndpoint] = fp
+	}
+	return out
 }
 
 // handleExisting refreshes Sonarr's variant identity only for Sonarr-owned
@@ -343,7 +365,7 @@ func (p *Poller) handleExisting(ctx context.Context, inst domain.SonarrInstance,
 	mergedExtra := existing.Extra
 	var variantChanged bool
 	if source, ok := existing.Extra["source"].(string); ok && source == topicSourceSonarr {
-		mergedExtra, variantChanged = mergeSonarrTopicExtra(existing.Extra, rec)
+		mergedExtra, variantChanged = mergeSonarrTopicExtra(existing.Extra, inst, rec)
 	}
 	realign := inst.UpdateExisting && needsRealign(existing, inst)
 	if !variantChanged && !realign {
@@ -382,8 +404,13 @@ func (p *Poller) handleExisting(ctx context.Context, inst domain.SonarrInstance,
 	metrics.SonarrRecordsProcessedTotal.WithLabelValues("updated").Inc()
 }
 
-func mergeSonarrTopicExtra(existing map[string]any, rec HistoryRecord) (map[string]any, bool) {
-	incoming := sonarrTopicExtra(rec)
+// mergeSonarrTopicExtra overlays a later grab's Sonarr identity on an existing
+// Sonarr-owned topic. It is also how a topic created before the instance/series
+// link existed gets one, and how a stale link (instance re-pointed at another
+// server) is renewed: the next grab of the same release rewrites it. Grab
+// hashes accumulate rather than overwrite (see storedGrabHashes).
+func mergeSonarrTopicExtra(existing map[string]any, inst domain.SonarrInstance, rec HistoryRecord) (map[string]any, bool) {
+	incoming := sonarrTopicExtra(inst, rec)
 	if len(incoming) == 0 {
 		return existing, false
 	}
@@ -394,14 +421,25 @@ func mergeSonarrTopicExtra(existing map[string]any, rec HistoryRecord) (map[stri
 	}
 	changed := false
 	for key, value := range incoming {
-		incomingString, ok := value.(string)
-		if !ok {
-			continue
+		switch v := value.(type) {
+		case string:
+			if current, ok := merged[key].(string); ok && current == v {
+				continue
+			}
+		case int:
+			// A stored number comes back from JSONB as float64.
+			if _, ok := merged[key]; ok && extra.Int(merged, key) == v {
+				continue
+			}
+		default:
+			continue // the grab-hash set is merged below, not replaced
 		}
-		if current, ok := merged[key].(string); ok && current == incomingString {
-			continue
-		}
-		merged[key] = incomingString
+		merged[key] = value
+		changed = true
+	}
+	if hashes := appendGrabHashes(storedGrabHashes(existing), recordGrabHashes(rec)); len(hashes) > 0 &&
+		!sameHashes(hashes, extra.StringSlice(existing, domain.TopicExtraSonarrGrabHashes)) {
+		merged[domain.TopicExtraSonarrGrabHashes] = hashes
 		changed = true
 	}
 	return merged, changed
