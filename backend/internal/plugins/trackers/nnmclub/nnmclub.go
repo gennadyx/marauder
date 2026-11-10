@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/artyomsv/marauder/backend/internal/domain"
+	"github.com/artyomsv/marauder/backend/internal/plugins/cfclearance"
 	"github.com/artyomsv/marauder/backend/internal/plugins/registry"
 	"github.com/artyomsv/marauder/backend/internal/plugins/trackers/forumcommon"
 )
@@ -50,6 +51,16 @@ func (p *plugin) DisplayName() string { return displayName }
 // UsesCloudflare implements registry.WithCloudflare.
 func (p *plugin) UsesCloudflare() bool { return true }
 
+var _ registry.WithChallengeProbe = (*plugin)(nil)
+
+// ChallengeProbeURL joins the backend's boot warm-up. This topic answered
+// 403 Cf-Mitigated on the owner's server on 2026-11-11; the root is not a
+// proven probe. Clearances are cached per host but satisfy the rule that
+// issued them, so on-demand fetches probe their own requested page instead.
+func (p *plugin) ChallengeProbeURL() string {
+	return (topicURL{host: knownDomains[0], param: "t", id: 420880}).active().String()
+}
+
 var _ registry.WithDomains = (*plugin)(nil)
 
 // Domains implements registry.WithDomains; first entry is canonical.
@@ -66,7 +77,9 @@ func (p *plugin) CanParse(rawURL string) bool {
 
 // postResolveTimeout bounds the optional lookup: both HTTP and headless
 // creation call Parse without a separate parse budget. Cloudflare, a timeout
-// or missing canonical markup must never prevent an add.
+// or missing canonical markup must never prevent an add. A warm clearance
+// is reusable within this budget; a cold mint is refused by FlareSolverr's
+// solveBudget before contacting the solver (normally a 20s minimum).
 const postResolveTimeout = 5 * time.Second
 
 func (p *plugin) Parse(ctx context.Context, rawURL string) (*domain.Topic, error) {
@@ -179,6 +192,12 @@ func (p *plugin) ResolveMetadata(ctx context.Context, rawURL string, creds *doma
 }
 
 func (p *plugin) fetch(ctx context.Context, target string, creds *domain.TrackerCredential) ([]byte, error) {
+	return cfclearance.RetryOnChallenge(target, func() ([]byte, error) {
+		return p.fetchOnce(ctx, target, creds)
+	})
+}
+
+func (p *plugin) fetchOnce(ctx context.Context, target string, creds *domain.TrackerCredential) ([]byte, error) {
 	// SSRF guard: `target` is a user-supplied topic URL. Parse it and confine
 	// the request to NNM-Club's own hosts before dialing — an off-site URL
 	// could otherwise point the backend at an internal service (cloud
@@ -209,16 +228,25 @@ func (p *plugin) fetch(ctx context.Context, target string, creds *domain.Tracker
 	if p.transport != nil {
 		sess.Client.Transport = p.transport
 	}
+	// Probe the guarded page itself: a root-issued clearance may not satisfy
+	// viewtopic's rule. Apply reuses the per-host cache before any cold mint,
+	// so Parse's short budget can use the clearance earned by boot warm-up.
+	clearance, clearErr := cfclearance.Apply(ctx, pluginName, sess.Client.Jar, u, u.String())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", cfclearance.UserAgent(clearance, userAgent))
 	resp, err := sess.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// A managed challenge is a block, not a rejected login. Preserve the
+	// provider's cause before the ordinary HTTP-status error is considered.
+	if cfclearance.IsChallenge(resp) {
+		return nil, fmt.Errorf("nnm-club GET %s: %w", target, cfclearance.Cause(clearErr))
+	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("nnm-club GET %s -> %d", target, resp.StatusCode)
 	}

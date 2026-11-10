@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **NNM-Club managed challenges use the configured Cloudflare solver.**
+  Page reads, post-link resolution and author comments now replay the shared
+  clearance cookie with its browser User-Agent and refresh a rejected
+  clearance once. NNM-Club joins startup clearance warm-up so short post-link
+  lookups can use the cache; blocked checks report a Cloudflare block, an
+  unavailable solver or missing solver configuration instead of a login error.
 - **NNM-Club post links are accepted.** Adding a topic by hand and topics
   created from Sonarr grabs now
   accept `viewtopic.php?p=…` as well as `?t=…`, including extra parameters and

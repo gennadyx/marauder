@@ -287,7 +287,7 @@ re-verified against the live site on **2026-09-03**.
 | **Account required** | No (anonymous) |
 | **Quality selection** | No |
 | **Episode filter** | No |
-| **Cloudflare** | Site is behind Cloudflare, but no solver is needed in practice |
+| **Cloudflare** | May require FlareSolverr, depending on the server's public IP |
 | **URL formats** | `https://nnmclub.to/forum/viewtopic.php?t=<topic_id>` or `https://nnmclub.to/forum/viewtopic.php?p=<post_id>` |
 
 phpBB tracker behind Cloudflare. Works anonymously — account login is
@@ -302,18 +302,41 @@ does not create a duplicate. If that lookup fails, the post link is still
 saved and monitoring retries resolution when fetching it. Existing saved
 post links are not automatically merged with separately added topic links.
 
-**No sidecar required.** Earlier revisions of this page told you to start
-a `cfsolver` profile. That sidecar was removed (it never passed the
-challenge; the FlareSolverr clearance minter replaced it), and NNM-Club does
-not currently serve an interstitial to Marauder at all — topic pages
-return the real HTML to an ordinary Go request. Cloudflare policy is
-dynamic and per-IP, so the clearance path remains available if your
-egress does get challenged, but it is not part of normal setup.
+**A solver may be required on your server.** On 2026-11-11 a server received
+Cloudflare managed challenges (403 with `Cf-Mitigated: challenge`) on a topic
+page with both Marauder's User-Agent and a Chrome User-Agent, while a
+residential connection received the page normally. If your server is
+challenged, configure FlareSolverr as described under [RuTracker](#rutrackerorg)
+and give it the same public egress IP as Marauder. Marauder uses the shared
+clearance cookie and its matching browser User-Agent for every NNM-Club page
+request. A deployment that is not challenged continues to work without a
+solver; the removed `cfsolver` sidecar is not used.
 
-**Validation status:** verified end-to-end against the live site on
-2026-08-03 with no credentials and no solver — `Check` resolved a real
+Challenged checks distinguish three conditions:
+
+- **No solver configured** (`solver_missing`): the topic tells you to run
+  FlareSolverr and set `MARAUDER_FLARESOLVERR_URL`.
+- **Solver unavailable** (`solver`): the topic reports that the solver failed
+  or did not answer in time; checks initially retry in 60 seconds, then back
+  off if failures persist.
+- **Clearance rejected** (`cloudflare`): after one refresh and retry, the topic
+  reports the Cloudflare block and asks you to check that the solver and
+  backend share a public IP. It does not ask you to add tracker credentials.
+
+The backend warms NNM-Club's clearance at startup using a known challenged
+topic page. Adding a post link still allows only five seconds for resolving
+`?p=` to `?t=`: a warmed clearance can be reused immediately, but a cold solve
+normally needs at least twenty seconds of budget and is not started. If
+warm-up has not finished or has failed, the post link is saved as before;
+later checks have a longer budget to mint a clearance and retry resolution.
+Existing post links are not rewritten or merged automatically. After fixing
+the solver setup, **Check now** retries topics already in backoff immediately.
+
+**Validation status:** the anonymous flow was verified end-to-end against the
+live site on 2026-08-03 with no credentials and no solver — `Check` resolved a real
 infohash and title from a public release topic, `Download` produced a
-magnet, and `ResolveMetadata` returned the title and poster.
+magnet, and `ResolveMetadata` returned the title and poster. The new clearance
+replay still needs validation from the challenged server's public IP.
 
 ### Toloka.to (Гуртом)
 
