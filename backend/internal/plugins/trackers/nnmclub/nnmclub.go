@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
+	"time"
 
 	"github.com/artyomsv/marauder/backend/internal/domain"
 	"github.com/artyomsv/marauder/backend/internal/plugins/registry"
@@ -26,11 +26,6 @@ const (
 	displayName = "NNM-Club.to"
 	userAgent   = "Marauder/0.3 (+https://marauder.cc)"
 )
-
-// urlPattern is host-agnostic; CanParse gates the captured host against the
-// known + admin-configured domain allowlist (the SSRF barrier — see
-// registry.DomainAllowed).
-var urlPattern = regexp.MustCompile(`^https?://(?:www\.)?([^/]+)/forum/viewtopic\.php\?t=(\d+)`)
 
 // knownDomains deliberately no longer lists nnmclub.me: as of 2026-08-03 it
 // is a parked domain (it serves a router.parklogic.com redirect page, not the
@@ -60,25 +55,48 @@ var _ registry.WithDomains = (*plugin)(nil)
 // Domains implements registry.WithDomains; first entry is canonical.
 func (p *plugin) Domains() []string { return knownDomains }
 
+var _ registry.WithCanonicalParseURL = (*plugin)(nil)
+
+func (p *plugin) CanonicalizesTopicURL() bool { return true }
+
 func (p *plugin) CanParse(rawURL string) bool {
-	m := urlPattern.FindStringSubmatch(strings.TrimSpace(rawURL))
-	return m != nil && registry.DomainAllowed(pluginName, m[1], knownDomains)
+	_, err := parseTopicURL(rawURL)
+	return err == nil
 }
 
-func (p *plugin) Parse(_ context.Context, rawURL string) (*domain.Topic, error) {
-	m := urlPattern.FindStringSubmatch(strings.TrimSpace(rawURL))
-	if m == nil {
-		return nil, errors.New("not a nnm-club viewtopic URL")
-	}
-	id, err := strconv.Atoi(m[2])
+// postResolveTimeout bounds the optional lookup: both HTTP and headless
+// creation call Parse without a separate parse budget. Cloudflare, a timeout
+// or missing canonical markup must never prevent an add.
+const postResolveTimeout = 5 * time.Second
+
+func (p *plugin) Parse(ctx context.Context, rawURL string) (*domain.Topic, error) {
+	ref, err := parseTopicURL(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("topic id: %w", err)
+		return nil, err
+	}
+	if ref.param == "p" {
+		rctx, cancel := context.WithTimeout(ctx, postResolveTimeout)
+		target := ref.active().String()
+		body, ferr := p.fetch(rctx, target, nil)
+		cancel()
+		if ferr == nil {
+			if id := topicIDFromPage(body, target); id != 0 {
+				ref.param, ref.id = "t", id
+			}
+		}
+	}
+	// Stored identity always uses the default domain; active mirrors are a
+	// fetch-time concern. Strip fragments, pagination and session parameters.
+	ref.host = knownDomains[0]
+	kind := "topic"
+	if ref.param == "p" {
+		kind = "post"
 	}
 	return &domain.Topic{
 		TrackerName: pluginName,
-		URL:         rawURL,
-		DisplayName: fmt.Sprintf("NNM-Club topic %d", id),
-		Extra:       map[string]any{"topic_id": id},
+		URL:         ref.String(),
+		DisplayName: fmt.Sprintf("NNM-Club %s %d", kind, ref.id),
+		Extra:       map[string]any{kind + "_id": ref.id},
 	}, nil
 }
 
@@ -97,29 +115,8 @@ var (
 	ogImageRe = regexp.MustCompile(`(?i)<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']`)
 )
 
-// canonicalURL rewrites rawURL's host to the admin-configured active domain
-// (registry.ActiveDomain) when one is set and differs from the URL's own
-// host. NNM-Club has no persisted domain field — every fetch dials the
-// stored topic URL directly — so this is the only place an active-domain
-// override actually takes effect: without it, a mirror switch would leave
-// existing topics fetching the old (possibly dead) host forever.
-func canonicalURL(rawURL string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil {
-		return "", fmt.Errorf("nnm-club: invalid URL: %w", err)
-	}
-	if active := registry.ActiveDomain(pluginName); active != "" && active != u.Hostname() {
-		u.Host = active
-	}
-	return u.String(), nil
-}
-
 func (p *plugin) Check(ctx context.Context, topic *domain.Topic, creds *domain.TrackerCredential) (*domain.Check, error) {
-	target, err := canonicalURL(topic.URL)
-	if err != nil {
-		return nil, err
-	}
-	body, err := p.fetch(ctx, target, creds)
+	body, _, err := p.fetchTopicPage(ctx, topic.URL, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -144,11 +141,7 @@ func (p *plugin) Check(ctx context.Context, topic *domain.Topic, creds *domain.T
 // poorly-seeded torrents — the reliable fix is the credentialed .torrent (with
 // the user's passkey'd announce, also crediting ratio), Phase 2.
 func (p *plugin) Download(ctx context.Context, topic *domain.Topic, _ *domain.Check, creds *domain.TrackerCredential) (*domain.Payload, error) {
-	target, err := canonicalURL(topic.URL)
-	if err != nil {
-		return nil, err
-	}
-	body, err := p.fetch(ctx, target, creds)
+	body, _, err := p.fetchTopicPage(ctx, topic.URL, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -171,11 +164,7 @@ func (p *plugin) Download(ctx context.Context, topic *domain.Topic, _ *domain.Ch
 var _ registry.WithMetadata = (*plugin)(nil)
 
 func (p *plugin) ResolveMetadata(ctx context.Context, rawURL string, creds *domain.TrackerCredential) (*registry.Metadata, error) {
-	target, err := canonicalURL(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("nnm-club resolve metadata: %w", err)
-	}
-	body, err := p.fetch(ctx, target, creds)
+	body, _, err := p.fetchTopicPage(ctx, rawURL, creds)
 	if err != nil {
 		return nil, fmt.Errorf("nnm-club resolve metadata: %w", err)
 	}

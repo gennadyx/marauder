@@ -295,8 +295,14 @@ func (p *Poller) processURL(ctx context.Context, inst domain.SonarrInstance, own
 		metrics.SonarrRecordsProcessedTotal.WithLabelValues("error").Inc()
 		return
 	}
-	if !res.Created { // lost a create race; another path already has it
-		metrics.SonarrRecordsProcessedTotal.WithLabelValues("duplicate").Inc()
+	if !res.Created { // Parse resolved an alias, or another path won the create race.
+		existing, err := p.topics.GetByURL(ctx, ownerID, res.URL)
+		if err != nil {
+			p.log.Warn().Err(err).Str("url", res.URL).Msg("duplicate topic lookup failed")
+			metrics.SonarrRecordsProcessedTotal.WithLabelValues("error").Inc()
+			return
+		}
+		p.handleExisting(ctx, inst, ownerID, existing, rec)
 		return
 	}
 	p.log.Info().Str("url", url).Str("tracker", tracker.Name()).

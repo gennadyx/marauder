@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/rs/zerolog"
 
 	"github.com/artyomsv/marauder/backend/internal/crypto"
@@ -66,6 +67,23 @@ func (pollerMirrorTracker) Domains() []string {
 }
 
 func init() { registry.RegisterTracker(pollerMirrorTracker{}) }
+
+// pollerPostTracker models NNM-Club's Parse resolving a post alias to a
+// canonical topic URL, after processURL's initial lookup has already missed.
+type pollerPostTracker struct{ pollerFakeTracker }
+
+const canonicalPostTopicURL = "https://posttracker.test/forum/viewtopic.php?t=9"
+
+func (pollerPostTracker) Name() string { return "posttracker-test" }
+func (pollerPostTracker) CanParse(u string) bool {
+	return strings.HasPrefix(u, "https://posttracker.test/")
+}
+func (pollerPostTracker) Parse(context.Context, string) (*domain.Topic, error) {
+	return &domain.Topic{URL: canonicalPostTopicURL, DisplayName: "Placeholder"}, nil
+}
+func (pollerPostTracker) CanonicalizesTopicURL() bool { return true }
+
+func init() { registry.RegisterTracker(pollerPostTracker{}) }
 
 // --- fakes ---------------------------------------------------------------
 
@@ -122,6 +140,9 @@ type fakeTopics struct {
 }
 
 func (f *fakeTopics) Create(_ context.Context, t *domain.Topic) (*domain.Topic, error) {
+	if _, exists := f.byURL[t.URL]; exists {
+		return nil, &pgconn.PgError{Code: "23505"}
+	}
 	t.ID = uuid.New()
 	f.created = append(f.created, t)
 	if f.byURL == nil {
@@ -439,6 +460,67 @@ func TestPoller_MirrorURLFindsExistingCanonicalTopic(t *testing.T) {
 	if ts.updated[0].Extra[domain.TopicExtraSonarrInfoHash] != "new-hash" ||
 		ts.updated[0].Extra[domain.TopicExtraSonarrSourceTitle] != "new AVC grab" {
 		t.Errorf("variant metadata not refreshed via mirror URL: %#v", ts.updated[0].Extra)
+	}
+}
+
+func TestPoller_PostAliasFindsExistingCanonicalTopic(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		realign bool
+	}{
+		{"refresh only", false},
+		{"refresh and realign", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owner, oldClient, newClient := uuid.New(), uuid.New(), uuid.New()
+			inst := baseInstance("", owner)
+			inst.UpdateExisting = tc.realign
+			inst.DefaultClientID = &newClient
+			inst.DefaultDownloadDir = "/sonarr"
+			existing := &domain.Topic{
+				ID: uuid.New(), UserID: owner, URL: canonicalPostTopicURL,
+				ClientID: &oldClient, Category: "manual-category", DownloadDir: "/manual",
+				Extra: map[string]any{
+					"source":                           topicSourceSonarr,
+					"topic_id":                         9,
+					domain.TopicExtraSonarrInfoHash:    "old-hash",
+					domain.TopicExtraSonarrSourceTitle: "old grab",
+				},
+			}
+			ts := &fakeTopics{byURL: map[string]*domain.Topic{canonicalPostTopicURL: existing}}
+			rec := HistoryRecord{
+				SourceTitle: "new grab",
+				Data: HistoryData{
+					NzbInfoURL:      "https://posttracker.test/forum/viewtopic.php?p=42",
+					TorrentInfoHash: "new-hash",
+				},
+			}
+
+			newTestPoller(&fakeInstances{}, fakeAdmin{}, ts).processURL(context.Background(), inst, owner, rec)
+
+			if len(ts.created) != 0 || len(ts.byURL) != 1 {
+				t.Fatalf("post alias must reuse the canonical row: created=%d rows=%d", len(ts.created), len(ts.byURL))
+			}
+			if len(ts.updated) != 1 || ts.updated[0].ID != existing.ID {
+				t.Fatalf("want the canonical topic updated, got %+v", ts.updated)
+			}
+			updated := ts.updated[0]
+			if updated.Extra[domain.TopicExtraSonarrInfoHash] != "new-hash" ||
+				updated.Extra[domain.TopicExtraSonarrSourceTitle] != "new grab" || updated.Extra["topic_id"] != 9 {
+				t.Errorf("variant or tracker metadata incorrect: %#v", updated.Extra)
+			}
+			wantClient, wantCategory, wantDir := &oldClient, "manual-category", "/manual"
+			if tc.realign {
+				wantClient, wantCategory, wantDir = &newClient, inst.DefaultCategory, inst.DefaultDownloadDir
+			}
+			if !ptrUUIDEqual(updated.ClientID, wantClient) || updated.Category != wantCategory || updated.DownloadDir != wantDir {
+				t.Errorf("routing = client %v category %q dir %q, want %v %q %q",
+					updated.ClientID, updated.Category, updated.DownloadDir, wantClient, wantCategory, wantDir)
+			}
+			if ts.names[0] != nil || ts.follows[0] != nil || ts.intervals[0] != nil || ts.folders[0] != nil {
+				t.Error("duplicate refresh must preserve user name, follow, interval and folder choices")
+			}
+		})
 	}
 }
 

@@ -90,6 +90,9 @@ func TestBuildAndCreate_DuplicateIsIdempotent(t *testing.T) {
 	if res.Created {
 		t.Errorf("want Created=false on duplicate")
 	}
+	if res.Topic != nil || res.URL != goodURL {
+		t.Errorf("duplicate result = %+v, want nil topic and attempted URL %q", res, goodURL)
+	}
 }
 
 func TestBuildAndCreate_NoTracker(t *testing.T) {
@@ -274,6 +277,96 @@ func TestBuildAndCreate_MirrorURL_CanonicalizesStoredURL(t *testing.T) {
 	}
 	if store.created.URL != "https://canon.test/topic/7" {
 		t.Errorf("stored URL = %q, want canonical host canon.test", store.created.URL)
+	}
+}
+
+// parsedURLTracker opts into Parse-owned identity; the URL variants let the
+// shared creator's adoption guard be exercised without a network request.
+type parsedURLTracker struct{ canonTracker }
+
+func (parsedURLTracker) Name() string { return "parsed-url-test" }
+func (parsedURLTracker) CanParse(u string) bool {
+	return strings.HasPrefix(u, "https://parsed.test/") || strings.HasPrefix(u, "https://parsed-mirror.test/")
+}
+func (parsedURLTracker) Domains() []string { return []string{"parsed.test", "parsed-mirror.test"} }
+
+func (parsedURLTracker) CanonicalizesTopicURL() bool { return true }
+
+func (parsedURLTracker) Parse(_ context.Context, u string) (*domain.Topic, error) {
+	parsed := "https://parsed-mirror.test/topic/7"
+	switch {
+	case strings.HasSuffix(u, "/empty"):
+		parsed = ""
+	case strings.HasSuffix(u, "/equal"):
+		parsed = u
+	case strings.HasSuffix(u, "/unclaimed"):
+		parsed = "https://unclaimed.test/topic/7"
+	}
+	return &domain.Topic{URL: parsed, DisplayName: "Placeholder"}, nil
+}
+func (parsedURLTracker) ResolveMetadata(_ context.Context, u string, _ *domain.TrackerCredential) (*registry.Metadata, error) {
+	// Echo the URL to prove metadata uses the same identity as persistence.
+	return &registry.Metadata{Title: u}, nil
+}
+
+// Mirrors Torznab/Newznab: Parse trims input for internal use, but no marker
+// promises to change the historically stored URL.
+type unmarkedURLTracker struct{ canonTracker }
+
+func (unmarkedURLTracker) Name() string { return "unmarked-url-test" }
+func (unmarkedURLTracker) CanParse(u string) bool {
+	return strings.HasPrefix(strings.TrimSpace(u), "https://unmarked.test/")
+}
+func (unmarkedURLTracker) Domains() []string { return []string{"unmarked.test"} }
+func (unmarkedURLTracker) Parse(_ context.Context, u string) (*domain.Topic, error) {
+	return &domain.Topic{URL: strings.TrimSpace(u), DisplayName: "Unmarked"}, nil
+}
+
+func init() {
+	registry.RegisterTracker(parsedURLTracker{})
+	registry.RegisterTracker(unmarkedURLTracker{})
+}
+
+func TestBuildAndCreate_ParsedURLAdoption(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"resolve", "https://parsed.test/topic/7"},
+		{"empty", "https://parsed.test/empty"},
+		{"equal", "https://parsed.test/equal"},
+		{"unclaimed", "https://parsed.test/unclaimed"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			store := &fakeStore{}
+			res, err := BuildAndCreate(context.Background(), store, CreateInput{UserID: uuid.New(), URL: "https://parsed.test/" + tc.path})
+			if err != nil || res == nil || !res.Created {
+				t.Fatalf("create = %+v, %v", res, err)
+			}
+			if store.created.URL != tc.want || store.created.DisplayName != tc.want {
+				t.Errorf("persisted URL = %q, metadata URL = %q; want %q", store.created.URL, store.created.DisplayName, tc.want)
+			}
+			if res.URL != tc.want {
+				t.Errorf("result URL = %q, want %q", res.URL, tc.want)
+			}
+			store.createErr = &pgconn.PgError{Code: "23505"}
+			duplicate, err := BuildAndCreate(context.Background(), store, CreateInput{UserID: uuid.New(), URL: "https://parsed.test/" + tc.path})
+			if err != nil || duplicate == nil || duplicate.Created || duplicate.Topic != nil || duplicate.URL != tc.want {
+				t.Errorf("duplicate = %+v, %v; want attempted URL %q", duplicate, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildAndCreate_UnmarkedParsedURLUnchanged(t *testing.T) {
+	const raw = " https://unmarked.test/topic/7 "
+	store := &fakeStore{}
+	_, err := BuildAndCreate(context.Background(), store, CreateInput{UserID: uuid.New(), URL: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.created.URL != raw {
+		t.Errorf("unmarked tracker changed stored identity: %q, want %q", store.created.URL, raw)
 	}
 }
 

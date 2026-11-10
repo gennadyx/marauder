@@ -140,6 +140,9 @@ type CreateInput struct {
 type Result struct {
 	Topic   *domain.Topic
 	Created bool
+	// URL is the identity sent to Store.Create, including on a duplicate.
+	// It can differ from the input after the tracker's Parse resolves an alias.
+	URL string
 }
 
 // BuildAndCreate matches the URL to a tracker, parses it, best-effort
@@ -169,6 +172,16 @@ func BuildAndCreate(ctx context.Context, store Store, in CreateInput) (*Result, 
 	parsed, err := tracker.Parse(ctx, in.URL)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrParse, err)
+	}
+	// Only opted-in trackers own the stored URL through Parse. NNM-Club
+	// resolves post links to topic links here; adopting every plugin's URL
+	// would also change legacy identities (e.g. trimmed Torznab inputs).
+	if wc, ok := tracker.(registry.WithCanonicalParseURL); ok && wc.CanonicalizesTopicURL() &&
+		parsed.URL != "" && parsed.URL != in.URL && tracker.CanParse(parsed.URL) {
+		canonical := CanonicalTopicURL(tracker, parsed.URL)
+		if tracker.CanParse(canonical) {
+			in.URL = canonical
+		}
 	}
 
 	interval := in.CheckIntervalSec
@@ -251,11 +264,11 @@ func BuildAndCreate(ctx context.Context, store Store, in CreateInput) (*Result, 
 	created, err := store.Create(ctx, t)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return &Result{Created: false}, nil
+			return &Result{Created: false, URL: in.URL}, nil
 		}
 		return nil, err
 	}
-	return &Result{Topic: created, Created: true}, nil
+	return &Result{Topic: created, Created: true, URL: in.URL}, nil
 }
 
 // resolveMetadata returns the poster URL and, when the user didn't supply a
