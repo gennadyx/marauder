@@ -219,6 +219,10 @@ func TestClearance_AllPageReaders(t *testing.T) {
 						nnmPost("100", "uploader", "Release")+`<a href="viewtopic.php?t=420880&amp;start=15">2</a></body>`, 1)
 				case "t=420880&start=15":
 					body = nnmTopicPage(nnmPost("200", "uploader", "Added episode 8."))
+				case "id=379398":
+					// The .torrent, which this site does not serve: Download
+					// falls back to the page's magnet.
+					return clearanceResponse(r, http.StatusNotFound, false, ""), nil
 				default:
 					t.Errorf("unexpected URL: %s", r.URL)
 					return clearanceResponse(r, http.StatusNotFound, false, ""), nil
@@ -228,6 +232,7 @@ func TestClearance_AllPageReaders(t *testing.T) {
 			ctx := context.Background()
 			topic := &domain.Topic{URL: testPostURL}
 			want := []string{testPostURL, canonical}
+			var wantProbes []string // nil: the same as the requests
 			switch reader {
 			case "Parse":
 				got, err := p.Parse(ctx, testPostURL)
@@ -245,6 +250,10 @@ func TestClearance_AllPageReaders(t *testing.T) {
 				if err != nil || got == nil || !strings.Contains(got.MagnetURI, "urn:btih:094ec3052ed759240e4dfd89f3f7ca5c5b428ff4&dn=") {
 					t.Fatalf("Download = %+v, %v", got, err)
 				}
+				// The .torrent request carries the clearance too, but its probe
+				// is the topic page: a download URL is not a page a solver opens.
+				wantProbes = []string{testPostURL, canonical, canonical}
+				want = append(want, "https://nnmclub.to/forum/download.php?id=379398")
 			case "ResolveMetadata":
 				got, err := p.ResolveMetadata(ctx, testPostURL, nil)
 				if err != nil || got == nil || got.Title == "" || got.ImageURL == "" {
@@ -257,8 +266,12 @@ func TestClearance_AllPageReaders(t *testing.T) {
 				}
 				want = append(want, canonical+"&start=15")
 			}
-			if !reflect.DeepEqual(fetched, want) || !reflect.DeepEqual(fp.probes, want) {
-				t.Errorf("requests=%v, probes=%v, want %v (probe each requested page, never the root)", fetched, fp.probes, want)
+			if wantProbes == nil {
+				wantProbes = want
+			}
+			if !reflect.DeepEqual(fetched, want) || !reflect.DeepEqual(fp.probes, wantProbes) {
+				t.Errorf("requests=%v, probes=%v, want requests %v and probes %v (probe each requested page, never the root)",
+					fetched, fp.probes, want, wantProbes)
 			}
 		})
 	}

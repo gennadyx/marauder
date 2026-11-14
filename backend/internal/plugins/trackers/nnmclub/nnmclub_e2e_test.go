@@ -12,14 +12,23 @@ import (
 )
 
 func TestE2E(t *testing.T) {
+	torrent, hash, page := testTorrent(t)
 	e2etest.RunFullPipeline(t, e2etest.Case{
-		Name: "nnmclub/anonymous-magnet-then-qbit",
+		Name: "nnmclub/anonymous-torrent-then-qbit",
 		Setup: func(t *testing.T, _ *e2etest.QBitFake) (registry.Tracker, string) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.HasPrefix(r.URL.Path, "/forum/viewtopic.php"):
 					w.WriteHeader(200)
-					_, _ = w.Write([]byte(fixtureViewtopicHTML))
+					_, _ = w.Write([]byte(page))
+				// The two download hops, as the site answers a guest: the
+				// forum redirects to the download host, which serves the file.
+				case r.URL.Path == downloadPath:
+					w.Header().Set("Location", bulkLocation)
+					w.WriteHeader(http.StatusFound)
+				case r.URL.Path == "/download.php":
+					w.Header().Set("Content-Type", "application/x-bittorrent")
+					_, _ = w.Write(torrent)
 				case strings.HasPrefix(r.URL.Path, "/forum/login.php"):
 					w.WriteHeader(200)
 					_, _ = w.Write([]byte(`<a href="logout.php">logout</a>`))
@@ -38,12 +47,14 @@ func TestE2E(t *testing.T) {
 				transport: &e2etest.HostRewriteTransport{
 					From: "nnmclub.to",
 					To:   testHost,
+					// The download host is bulk.nnmclub.to.
+					StripSubdomain: true,
 				},
 			}
 			return p, "https://nnmclub.to/forum/viewtopic.php?t=420880"
 		},
-		// Anonymous Phase 1: no creds, magnet payload expected.
-		ExpectedHash:      "094ec3052ed759240e4dfd89f3f7ca5c5b428ff4",
-		ExpectTorrentFile: false,
+		// No account: the real .torrent, not the page's hash-only magnet.
+		ExpectedHash:      hash,
+		ExpectTorrentFile: true,
 	})
 }

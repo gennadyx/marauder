@@ -295,6 +295,19 @@ not supported because Cloudflare Turnstile blocks automated login
 flows. No credentials needed; do **not** add an NNM-Club account entry
 on `/accounts`.
 
+**What is delivered.** Marauder downloads the release's real `.torrent`, which
+NNM-Club serves without an account, and accepts it only when its infohash is
+the one in the topic page's magnet link. The file carries the tracker announce
+URLs, the comment and the file list, so
+[Download only new files](update-policy.md) and the
+[folder name](folder-name.md) work for NNM-Club topics. If the file cannot be
+fetched or does not match — the site gates the download again, or the download
+host is blocked from your server — Marauder falls back to the page's magnet
+link and logs a warning (`could not fetch the .torrent; delivering the magnet
+instead`, with the reason). The magnet carries no announce URL, so peers come
+from DHT only, and an update added paused stays without a file list until you
+start it.
+
 Both topic and post links accept extra query parameters (in any order) and
 fragments such as `#3820417`. When the page can be reached and identifies its
 topic, a post link is saved as the canonical `?t=` URL so adding either form
@@ -335,8 +348,14 @@ the solver setup, **Check now** retries topics already in backoff immediately.
 **Validation status:** the anonymous flow was verified end-to-end against the
 live site on 2026-08-03 with no credentials and no solver — `Check` resolved a real
 infohash and title from a public release topic, `Download` produced a
-magnet, and `ResolveMetadata` returned the title and poster. The new clearance
-replay still needs validation from the challenged server's public IP.
+magnet, and `ResolveMetadata` returned the title and poster. On 2026-11-14,
+again with no credentials and no solver, `Download` returned the real
+`.torrent` for a `?t=` link and for a `?p=` link (a 2011 release and one
+published that day), each with the infohash of the page's magnet. The clearance
+replay still needs validation from the challenged server's public IP, and so
+does the `.torrent` download from such a server: its second request goes to
+`bulk.nnmclub.to`, which was not challenged from the address it was measured
+from. Until then a challenged server may get the magnet fallback.
 
 ### Toloka.to (Гуртом)
 

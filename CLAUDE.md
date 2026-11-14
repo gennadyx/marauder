@@ -953,9 +953,37 @@ readers retry unresolved post links and fetch `?t=` page one; author comments
 are skipped if the topic ID remains unknown, rather than attributing a reply
 to the release author. No automatic migration or merge of stored post URLs.
 
+NNM-Club `Download` returns the real `.torrent` and keeps the page's magnet
+only as a fallback (`nnmclub/torrentfile.go`, 2026-11-14). The plugin used to
+record `download.php` as login-gated and delivered a hash-only magnet. Measured
+that day with a plain GET, no cookie and Marauder's own User-Agent, on a 2011
+release and on one published the same day: `/forum/download.php?id=<n>` answers
+a guest `302 Location: //bulk.nnmclub.to/download.php?csid=…&uid=-1&id=<n>`,
+and that URL serves the file with the infohash of the page's magnet, the
+announce URLs (guest passkey) and the comment. The magnet was the cause of a
+field report: with the update policy on, a magnet update is added paused
+(`paused_magnet`), a stopped torrent fetches no metadata, and the folder name
+cannot apply — so the torrent sat in qBittorrent stopped, with no files, under
+the page title, and nothing rechecked the data on disk. Rules the code keeps:
+the file is accepted **only** with the magnet's infohash (Check derives the
+topic hash from the magnet); the redirect is followed by hand, at most
+`maxTorrentHops` requests, and **every** hop must be `https` on the forum host
+or `bulk.<forum host>` with no port (`torrentHostAllowed`; known and custom
+domains, like the page fetch); both hops share `torrentFetchTimeout` (10s) so
+a stalled download host cannot spend the budget the magnet does not need;
+every failure delivers the magnet and logs **one Warn** with the reason,
+because a silent downgrade is what the report was. On the Cloudflare side the
+topic page is the probe for both hops — a download URL must never reach the
+solver as a page to open — and the forum's clearance is seeded onto the
+download host, as a browser's domain-wide cookie would be; a challenge there
+is a plain failure and does **not** invalidate the clearance that just read
+the topic page. Whether `bulk.` challenges a datacenter address, and accepts
+that clearance, is **not measured** (neither host challenged the address this
+was tested from).
+
 NNM-Club is the third `plugins/cfclearance` consumer (after RuTracker and
-Kinozal): its one `fetch` path covers checks, magnet downloads, metadata,
-post-link resolution and comment pagination. `fetchOnce` keeps the host
+Kinozal): its one `fetch` path covers checks, the topic page a download reads,
+metadata, post-link resolution and comment pagination. `fetchOnce` keeps the host
 allowlist ahead of `Apply`, sends `UserAgent(clearance, userAgent)`, and tests
 `IsChallenge` before the ordinary HTTP-status error; `Cause` preserves the
 `cloudflare` / `solver` / `solver_missing` split rather than misreporting a

@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **NNM-Club topics deliver the real `.torrent` instead of a magnet link.**
+  The site serves the file without an account, so Marauder now downloads it
+  and accepts it when its infohash matches the topic page's magnet. Updates of
+  NNM-Club topics can therefore use *Download only new files* and the folder
+  name, which a magnet could not: such an update was added paused, with no
+  file list, under the page title, and nothing rechecked the files already on
+  disk. The torrent also carries the tracker's announce URLs and comment. If
+  the file cannot be fetched, the magnet is delivered as before and a warning
+  is logged.
 - **NNM-Club managed challenges use the configured Cloudflare solver.**
   Page reads, post-link resolution and author comments now replay the shared
   clearance cookie with its browser User-Agent and refresh a rejected

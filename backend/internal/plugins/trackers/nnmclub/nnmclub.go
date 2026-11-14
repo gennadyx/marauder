@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/artyomsv/marauder/backend/internal/domain"
 	"github.com/artyomsv/marauder/backend/internal/plugins/cfclearance"
 	"github.com/artyomsv/marauder/backend/internal/plugins/registry"
@@ -37,6 +39,9 @@ var knownDomains = []string{"nnmclub.to"}
 type plugin struct {
 	sessions  *forumcommon.SessionStore
 	transport http.RoundTripper
+	// torrentTimeout overrides torrentFetchTimeout. Zero means the constant;
+	// only tests set it, so a stalled-host test need not wait the real budget.
+	torrentTimeout time.Duration
 }
 
 func init() {
@@ -116,7 +121,8 @@ func (p *plugin) Parse(ctx context.Context, rawURL string) (*domain.Topic, error
 // NNM-Club is anonymous-only in Marauder: its login is gated by Cloudflare
 // Turnstile, which blocks automated (headless/server-side) sign-in, so the
 // plugin deliberately does NOT implement registry.WithCredentials. Delivery
-// uses the public, account-free magnet on the topic page.
+// uses the account-free .torrent, and the page's public magnet when that
+// cannot be fetched.
 
 // --- Check / Download --------------------------------------------------
 
@@ -145,16 +151,18 @@ func (p *plugin) Check(ctx context.Context, topic *domain.Topic, creds *domain.T
 	return check, nil
 }
 
-// Download returns a magnet for the topic. Anonymous (no creds) is the only
-// supported mode in Phase 1: the .torrent at download.php is login-gated
-// (302 -> login), and a fresh anonymous fetch of the topic page yields a
-// hash-only magnet (NNM-Club only embeds its tracker announce in the magnet
-// for logged-in sessions). So we return the page's hash-only magnet enriched
-// with a real &dn= display name. Peer discovery relies on DHT and may stall on
-// poorly-seeded torrents — the reliable fix is the credentialed .torrent (with
-// the user's passkey'd announce, also crediting ratio), Phase 2.
+// Download returns the topic's .torrent, which the site serves without an
+// account (see torrentfile.go), and falls back to the page's magnet when the
+// file cannot be fetched or is not the torrent the page names.
+//
+// The magnet is the authority for what the topic is — Check derives the topic
+// hash from it — so the file is accepted only with that exact infohash. The
+// fallback magnet is hash-only (the page embeds no announce URL for a guest)
+// with a &dn= display name: peers come from DHT alone, and the update policy
+// and the folder name cannot use it. That is a real downgrade, so it is
+// logged at Warn rather than taken silently.
 func (p *plugin) Download(ctx context.Context, topic *domain.Topic, _ *domain.Check, creds *domain.TrackerCredential) (*domain.Payload, error) {
-	body, _, err := p.fetchTopicPage(ctx, topic.URL, creds)
+	body, ref, err := p.fetchTopicPage(ctx, topic.URL, creds)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +170,16 @@ func (p *plugin) Download(ctx context.Context, topic *domain.Topic, _ *domain.Ch
 	if m == nil {
 		return nil, errors.New("nnm-club: topic page has no magnet link")
 	}
-	magnet := "magnet:?xt=urn:btih:" + strings.ToLower(string(m[1]))
+	hash := strings.ToLower(string(m[1]))
+	file, fileName, ferr := p.fetchTorrentFile(ctx, body, ref, hash, creds)
+	if ferr == nil {
+		// Exactly one of TorrentFile and MagnetURI: every client resolves a
+		// magnet first when both are set, which would throw the file away.
+		return &domain.Payload{TorrentFile: file, FileName: fileName}, nil
+	}
+	log.Warn().Str("tracker", pluginName).Str("url", ref.String()).Err(ferr).
+		Msg("nnm-club: could not fetch the .torrent; delivering the magnet instead")
+	magnet := "magnet:?xt=urn:btih:" + hash
 	if mt := titleRe.FindSubmatch(body); mt != nil {
 		if name := forumcommon.CleanTitle(string(mt[1]), " :: NNM-Club"); name != "" {
 			magnet += "&dn=" + url.QueryEscape(name)
@@ -189,6 +206,19 @@ func (p *plugin) ResolveMetadata(ctx context.Context, rawURL string, creds *doma
 		meta.ImageURL = strings.TrimSpace(string(m[1]))
 	}
 	return meta, nil
+}
+
+// session returns the shared HTTP session the plugin's requests run on.
+func (p *plugin) session(creds *domain.TrackerCredential) *forumcommon.Session {
+	key := pluginName + ":nocreds"
+	if creds != nil {
+		key = forumcommon.SessionKey(pluginName, creds.UserID.String())
+	}
+	sess := p.sessions.GetOrCreate(key, userAgent)
+	if p.transport != nil {
+		sess.Client.Transport = p.transport
+	}
+	return sess
 }
 
 func (p *plugin) fetch(ctx context.Context, target string, creds *domain.TrackerCredential) ([]byte, error) {
@@ -220,14 +250,7 @@ func (p *plugin) fetchOnce(ctx context.Context, target string, creds *domain.Tra
 		return nil, fmt.Errorf("nnm-club: refusing to fetch off-site host %q", u.Hostname())
 	}
 
-	key := pluginName + ":nocreds"
-	if creds != nil {
-		key = forumcommon.SessionKey(pluginName, creds.UserID.String())
-	}
-	sess := p.sessions.GetOrCreate(key, userAgent)
-	if p.transport != nil {
-		sess.Client.Transport = p.transport
-	}
+	sess := p.session(creds)
 	// Probe the guarded page itself: a root-issued clearance may not satisfy
 	// viewtopic's rule. Apply reuses the per-host cache before any cold mint,
 	// so Parse's short budget can use the clearance earned by boot warm-up.

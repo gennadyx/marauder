@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -322,6 +323,9 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+// TestDownload covers the fallback: this test server has no .torrent (404), so
+// Download delivers the page's magnet. The .torrent path is in
+// torrentfile_test.go.
 func TestDownload(t *testing.T) {
 	p := newTestPlugin(t)
 	topic := &domain.Topic{URL: testTopicURL}
@@ -330,7 +334,7 @@ func TestDownload(t *testing.T) {
 		t.Fatalf("Download: %v", err)
 	}
 	if len(payload.TorrentFile) != 0 {
-		t.Errorf("expected no torrent file in anonymous mode, got %d bytes", len(payload.TorrentFile))
+		t.Errorf("expected the magnet when the site serves no torrent, got %d bytes", len(payload.TorrentFile))
 	}
 	if !strings.Contains(payload.MagnetURI, "urn:btih:094ec3052ed759240e4dfd89f3f7ca5c5b428ff4") {
 		t.Errorf("magnet missing infohash: %q", payload.MagnetURI)
@@ -379,21 +383,25 @@ func TestResolveMetadata(t *testing.T) {
 func TestPostURL_Readers(t *testing.T) {
 	readers := []struct {
 		name string
-		read func(*testing.T, *plugin)
+		// extra is what the reader requests after the page reads. Download asks
+		// for the .torrent, which this server does not have, so it must fall
+		// back to the page's magnet.
+		extra []string
+		read  func(*testing.T, *plugin)
 	}{
-		{"Check", func(t *testing.T, p *plugin) {
+		{"Check", nil, func(t *testing.T, p *plugin) {
 			check, err := p.Check(context.Background(), &domain.Topic{URL: testPostURL}, nil)
 			if err != nil || check == nil || check.Hash != "094ec3052ed759240e4dfd89f3f7ca5c5b428ff4" {
 				t.Fatalf("Check = %+v, %v", check, err)
 			}
 		}},
-		{"Download", func(t *testing.T, p *plugin) {
+		{"Download", []string{"id=379398"}, func(t *testing.T, p *plugin) {
 			payload, err := p.Download(context.Background(), &domain.Topic{URL: testPostURL}, nil, nil)
 			if err != nil || payload == nil || !strings.Contains(payload.MagnetURI, "urn:btih:094ec3052ed759240e4dfd89f3f7ca5c5b428ff4&dn=") {
 				t.Fatalf("Download = %+v, %v", payload, err)
 			}
 		}},
-		{"ResolveMetadata", func(t *testing.T, p *plugin) {
+		{"ResolveMetadata", nil, func(t *testing.T, p *plugin) {
 			meta, err := p.ResolveMetadata(context.Background(), testPostURL, nil)
 			if err != nil || meta == nil || !strings.Contains(meta.Title, "Через тернии к звёздам") ||
 				meta.ImageURL != "https://a.radikal.ru/a11/2008/6f/f91ffdbf65b2.jpg" {
@@ -435,8 +443,9 @@ func TestPostURL_Readers(t *testing.T) {
 				rec := &hostRecordingRewrite{target: strings.TrimPrefix(srv.URL, "http://")}
 				p := &plugin{sessions: forumcommon.New(), transport: rec}
 				reader.read(t, p)
-				if !reflect.DeepEqual(rec.queries, tc.want) {
-					t.Errorf("queries = %v, want %v", rec.queries, tc.want)
+				want := append(slices.Clone(tc.want), reader.extra...)
+				if !reflect.DeepEqual(rec.queries, want) {
+					t.Errorf("queries = %v, want %v", rec.queries, want)
 				}
 			})
 		}
